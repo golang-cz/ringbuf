@@ -89,9 +89,7 @@ func (rb *RingBuffer[T]) Write(item T) {
 	rb.writePos.Store(pos)
 
 	// Wake up all readers efficiently
-	rb.mu.Lock()
 	rb.cond.Broadcast()
-	rb.mu.Unlock()
 }
 
 var defaultSubscribeOpts = SubscribeOpts{

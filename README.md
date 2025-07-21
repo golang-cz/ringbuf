@@ -97,19 +97,12 @@ ringbuf is designed for high-performance pub/sub scenarios with a single produce
 
 ## Performance Characteristics
 
-- **Write path**: Lock-free using atomic operations (~10ns/op)
+- **Write path**: Lock-free using atomic operations (~5 ns/op)
 - **Read path**: Lock-free hot path with minimal synchronization when waiting for new data
 - **Memory**: Single copy of data shared across all readers (0 B/op)
-- **Scalability**: Optimized for thousands of concurrent readers (1-10,000 readers at ~10ns/op)
+- **Scalability**: Optimized for thousands of concurrent readers (1-10,000 readers at ~5 ns/op)
 - **Latency**: Sub-microsecond read/write operations in the common case
-- **Throughput**: 100M+ operations per second on modern hardware
-
-## Performance
-
-- **Write operations**: ~10ns/op (lock-free)
-- **Read operations**: ~10ns/op (scales from 1 to 10,000 readers)
-- **Memory allocations**: 0 B/op, 0 allocs/op
-- **Throughput**: 100M+ operations/second on modern hardware
+- **Throughput**: 200M+ operations per second on modern hardware
 
 ```
 go test -bench=. -benchmem -run=^$
@@ -117,16 +110,16 @@ goos: darwin
 goarch: arm64
 pkg: github.com/golang-cz/ringbuf
 cpu: Apple M2
-BenchmarkWriteOnly/BufferSize_1000-8         	125643639	         9.254 ns/op	       0 B/op	       0 allocs/op
-BenchmarkWriteOnly/BufferSize_10000-8        	127026306	         9.307 ns/op	       0 B/op	       0 allocs/op
-BenchmarkWriteOnly/BufferSize_100000-8       	129240076	         9.639 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_1-8                 	127627356	         9.267 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_10-8                	129470997	         9.293 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_100-8               	112457448	         9.351 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_1000-8              	115183900	         9.681 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_10000-8             	114478311	         9.751 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWriteOnly/BufferSize_1000-8         	240796418	         4.744 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWriteOnly/BufferSize_10000-8        	253082376	         4.773 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWriteOnly/BufferSize_100000-8       	253053534	         4.727 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReaders/Readers_1-8                 	261524536	         4.599 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReaders/Readers_10-8                	260881426	         4.567 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReaders/Readers_100-8               	259058947	         4.626 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReaders/Readers_1000-8              	215782249	         4.814 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReaders/Readers_10000-8             	223414704	         4.883 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/golang-cz/ringbuf	102.516s
+ok  	github.com/golang-cz/ringbuf	90.781
 ```
 
 ## Authors
