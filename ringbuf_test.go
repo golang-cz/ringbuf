@@ -40,7 +40,7 @@ func TestBasic(t *testing.T) {
 			for val := range sub.Seq {
 				t.Logf("%v:   Reading %+v", sub.Name, val)
 			}
-			if err := sub.Error(); !errors.Is(err, context.Canceled) {
+			if err := sub.Err(); !errors.Is(err, context.Canceled) {
 				t.Errorf("%v: %v", sub.Name, err)
 			}
 		}()
@@ -103,7 +103,7 @@ func TestRingBuf(t *testing.T) {
 				t.Errorf("expected %v items, got %v", numItems, count)
 			}
 
-			if err := sub.Error(); !errors.Is(err, context.Canceled) {
+			if err := sub.Err(); !errors.Is(err, context.Canceled) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		}()

@@ -52,8 +52,8 @@ func main() {
 	}
 	
 	// Check if reader fell behind
-	if sub.Error() != nil {
-		fmt.Println("Reader fell behind:", sub.Error())
+	if sub.Err() != nil {
+		fmt.Println("Reader fell behind:", sub.Err())
 	}
 }
 ```
@@ -70,8 +70,8 @@ for i := 0; i < 5; i++ {
 		for val := range sub.Seq {
 			fmt.Printf("Reader %d: %s\n", readerID, val)
 		}
-		if sub.Error() != nil {
-			fmt.Printf("Reader %d fell behind: %v\n", readerID, sub.Error())
+		if sub.Err() != nil {
+			fmt.Printf("Reader %d fell behind: %v\n", readerID, sub.Err())
 		}
 	}(i)
 }

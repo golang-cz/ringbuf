@@ -87,6 +87,6 @@ func (s *Subscriber[T]) Seq(yield func(T) bool) {
 }
 
 // Error returns any error that occurred during reading, e.g. ErrSubscriberTooSlow or context.Canceled.
-func (s *Subscriber[T]) Error() error {
+func (s *Subscriber[T]) Err() error {
 	return s.err
 }
