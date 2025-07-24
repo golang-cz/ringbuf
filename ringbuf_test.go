@@ -75,8 +75,8 @@ func TestRingBuf(t *testing.T) {
 	for i := range numReaders {
 		ctx, cancel := context.WithCancel(context.Background())
 		sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
-			Name:   fmt.Sprintf("sub-%v", i),
-			MaxLag: maxLag,
+			Name:      fmt.Sprintf("sub-%v", i),
+			MaxBehind: maxLag,
 		})
 
 		go func() {

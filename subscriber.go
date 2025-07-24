@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-var ErrSubscriberTooSlow = errors.New("ringbuf subscriber is too slow")
+var ErrSubscriberTooSlow = errors.New("ringbuf: subscriber is too slow")
 
 // Subscriber is an independent ring buffer reader with its own position.
 type Subscriber[T any] struct {
@@ -29,9 +29,9 @@ func (s *Subscriber[T]) Next() (T, error) {
 		// Check if the reader is too far behind.
 		diff := writePos - pos
 		if diff > s.maxLag {
-			s.ringBuf.NumSubscribers.Add(-1)
+			s.ringBuf.numSubscribers.Add(-1)
 			var zero T
-			return zero, fmt.Errorf("ringbuf subscriber[%v] fell behind (pos=%v, writePos=%v, lag=%v, size=%v, %0.f%% out of max %0.f%%): %w", s.Name, pos, writePos, diff, ringBuf.size, 100*(float64(diff)/float64(ringBuf.size)), 100*(float64(s.maxLag)/float64(ringBuf.size)), ErrSubscriberTooSlow)
+			return zero, fmt.Errorf("ringbuf: subscriber[%v] fell behind (pos=%v, writePos=%v, lag=%v, size=%v, %0.f%% out of max %0.f%%): %w", s.Name, pos, writePos, diff, ringBuf.size, 100*(float64(diff)/float64(ringBuf.size)), 100*(float64(s.maxLag)/float64(ringBuf.size)), ErrSubscriberTooSlow)
 		}
 
 		// Lock-free hot path.
@@ -45,13 +45,13 @@ func (s *Subscriber[T]) Next() (T, error) {
 		// Check context cancellation.
 		select {
 		case <-s.ctx.Done():
-			s.ringBuf.NumSubscribers.Add(-1)
+			s.ringBuf.numSubscribers.Add(-1)
 			var zero T
 			return zero, s.ctx.Err()
 		default:
 		}
 
-		// Acquire lock and double-check.
+		// Acquire lock and double-check the position.
 		ringBuf.mu.Lock()
 
 		writePos = ringBuf.writePos.Load()
@@ -63,7 +63,7 @@ func (s *Subscriber[T]) Next() (T, error) {
 			return item, nil
 		}
 
-		// Wait for broadcast signal. Wake up and try again.
+		// Wait for data. Wake up on broadcast signal and try again.
 		ringBuf.cond.Wait()
 		ringBuf.mu.Unlock()
 	}
