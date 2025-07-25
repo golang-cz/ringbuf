@@ -10,8 +10,7 @@
 - **Go 1.23 range iterator support** - Clean, idiomatic consumption
 - **Independent readers with tailing** - Each reader maintains its own position
 - **Zero-copy reads** - Direct access to ring buffer data
-- **Optimized for thousands of readers** - Scales to 100,000+ concurrent readers
-- **Context-aware blocking** - Graceful cancellation support
+- **Optimized for thousands of readers** - Scales to 10,000+ concurrent readers
 - **Real-time data tailing** - Subscribe to live streams like `tail -f`
 
 ## Installation
@@ -76,6 +75,71 @@ for i := 0; i < 5; i++ {
 	}(i)
 }
 ```
+
+## Historical Data Access
+
+```go
+// Subscribe to historical data (last 100 items)
+sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+	Name:        "historical-reader",
+	StartBehind: 100, // Start reading from 100 items ago
+	MaxBehind:   500, // Allow up to 500 items of lag
+})
+
+// Subscribe to latest (future) data only
+sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+	Name:        "latest-reader",
+	StartBehind: 0,   // Start from latest position
+	MaxBehind:   100, // Allow up to 100 items of lag
+})
+```
+
+## Reconnection Logic
+
+ringbuf provides efficient reconnection support using the `Skip` method, which allows subscribers to fast-forward to a specific position using only lock-free operations.
+
+```go
+type Message struct {
+	ID   int64
+	Data string
+}
+
+// Example: Reconnecting subscriber that resumes from last processed message
+func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], lastProcessedID int64) {
+	// Subscribe and fast-forward to resume processing
+	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+		Name:        "reconnect-subscriber",
+		StartBehind: stream.Size() * 3 / 4, // Start from 75% back in the buffer.
+		MaxBehind:   stream.Size() * 3 / 4, // Allow up to 75% lag.
+	})
+	
+	// Skip all messages we've already processed.
+	found := sub.Skip(func(msg Message) bool {
+		return msg.ID <= lastProcessedID
+	})
+
+	if !found {
+		fmt.Printf("Couldn't reconnect from message %d - not in the buffer anymore", lastProcessedID)
+		return
+	}
+	
+	// Resume processing from the next unprocessed message
+	for val := range sub.Seq {
+		fmt.Printf("Processing message %d: %s\n", val.ID, val.Data)
+		// Process message...
+	}
+	
+	if sub.Err() != nil {
+		fmt.Printf("Subscriber error: %v\n", sub.Err())
+	}
+}
+```
+
+The `Skip` method is optimized for reconnection scenarios:
+- **Lock-free operation** - Uses only atomic operations for maximum performance
+- **Fast-forward capability** - Quickly skip through already-processed messages
+- **Resume from exact position** - Continue processing from the next unprocessed message
+- **Best-effort delivery** - If the target message is no longer in the buffer, gracefully handle the situation
 
 ## Design Philosophy
 

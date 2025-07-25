@@ -12,7 +12,7 @@ import (
 
 // BenchmarkWriteOnly measures write performance
 func BenchmarkWriteOnly(b *testing.B) {
-	bufferSizes := []uint64{1_000, 10_000, 100_000}
+	bufferSizes := []uint64{1_000, 10_000, 100_000, 1_000_000}
 
 	for _, bufferSize := range bufferSizes {
 		b.Run(fmt.Sprintf("BufferSize_%d", bufferSize), func(b *testing.B) {
@@ -31,7 +31,7 @@ func BenchmarkWriteOnly(b *testing.B) {
 // BenchmarkReaders measures performance of writer with multiple readers
 func BenchmarkReaders(b *testing.B) {
 	bufferSize := uint64(1_000)
-	numReaders := []int{1, 10, 100, 1_000, 10_000}
+	numReaders := []int{1, 10, 100, 1_000, 10_000, 20_000}
 
 	for _, readers := range numReaders {
 		b.Run(fmt.Sprintf("Readers_%d", readers), func(b *testing.B) {

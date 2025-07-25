@@ -126,3 +126,42 @@ func TestRingBuf(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestSkip(t *testing.T) {
+	stream := ringbuf.New[*Data](100)
+
+	// Write some data
+	for i := 0; i < 50; i++ {
+		stream.Write(&Data{ID: i, Name: fmt.Sprintf("msg_%d", i)})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lastProcessedID := 30
+
+	// Subscribe 80% items behind the writer.
+	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+		Name:        "skip_test",
+		StartBehind: stream.Size() * 8 / 10,
+		MaxBehind:   stream.Size() * 8 / 10,
+	})
+
+	// Reconnect from the last processed ID.
+	found := sub.Skip(func(item *Data) bool {
+		return item.ID <= lastProcessedID
+	})
+	if !found {
+		t.Fatalf("expected to find message with ID %v", lastProcessedID)
+	}
+
+	// Continue reading to verify we're at the right position
+	nextItem, err := sub.Next()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if nextItem.ID != lastProcessedID+1 {
+		t.Fatalf("expected ID %v, got %d", lastProcessedID+1, nextItem.ID)
+	}
+}
