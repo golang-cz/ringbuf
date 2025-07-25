@@ -2,11 +2,14 @@ package ringbuf
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 )
 
-var ErrSubscriberTooSlow = errors.New("ringbuf: subscriber is too slow")
+var (
+	ErrSubscriberTooSlow = fmt.Errorf("ringbuf: subscriber is too slow: %w", io.ErrUnexpectedEOF)
+	ErrRingBufferClosed  = fmt.Errorf("ringbuf: ring buffer is closed: %w", io.EOF)
+)
 
 // Subscriber is an independent ring buffer reader with its own position.
 type Subscriber[T any] struct {
@@ -42,12 +45,16 @@ func (s *Subscriber[T]) Next() (T, error) {
 			return item, nil
 		}
 
-		// Check context cancellation.
+		// Check for end of stream.
 		select {
 		case <-s.ctx.Done():
 			s.ringBuf.numSubscribers.Add(-1)
 			var zero T
 			return zero, s.ctx.Err()
+		case <-ringBuf.closed:
+			s.ringBuf.numSubscribers.Add(-1)
+			var zero T
+			return zero, ErrRingBufferClosed
 		default:
 		}
 
@@ -63,13 +70,15 @@ func (s *Subscriber[T]) Next() (T, error) {
 			return item, nil
 		}
 
-		// Wait for data. Wake up on broadcast signal and try again.
+		// Wait for new data. Wake up on broadcast signal and try again.
 		ringBuf.cond.Wait()
 		ringBuf.mu.Unlock()
 	}
 }
 
 // Seq returns iterator for consuming items from the buffer.
+//
+// You can use .Err() to check for errors after the iteration is done.
 func (s *Subscriber[T]) Seq(yield func(T) bool) {
 	for { // Range loop.
 		item, err := s.Next()
@@ -113,7 +122,12 @@ func (s *Subscriber[T]) Skip(skipCondition func(T) bool) bool {
 	return false
 }
 
-// Err returns any error that occurred during reading, e.g. ringbuf.ErrSubscriberTooSlow or context.Canceled.
+// Err returns the last error during iteration over .Seq.
+// Common errors:
+// - ErrRingBufferClosed/io.UnexpectedEOF - ring buffer was closed
+// - ErrSubscriberTooSlow/io.EOF          - subscriber fell too far behind
+// - context.Canceled/DeadlineExceeded    - subscriber context was cancelled or timed out
+// Returns nil if no error occurred.
 func (s *Subscriber[T]) Err() error {
 	return s.err
 }

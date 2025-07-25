@@ -17,8 +17,9 @@ func New[T any](size uint64) *RingBuffer[T] {
 		panic("ringbuf: size must be > 10")
 	}
 	rb := &RingBuffer[T]{
-		buf:  make([]T, size),
-		size: uint64(size),
+		buf:    make([]T, size),
+		size:   uint64(size),
+		closed: make(chan struct{}),
 	}
 	rb.cond = sync.NewCond(&rb.mu)
 	return rb
@@ -43,6 +44,10 @@ type RingBuffer[T any] struct {
 	// the overflow is handled gracefully by starting subscribers from position 0 instead
 	// of the intended position. This is an acceptable compromise for performance.
 	writePos atomic.Uint64
+
+	// Channel indicating for subscribers that the ring buffer has been closed and no new
+	// data will be available for reading.
+	closed chan struct{}
 
 	// Synchronization primitives for waking up waiting subscribers.
 	mu   sync.Mutex
@@ -138,7 +143,9 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 	}
 }
 
-// Write inserts items into the ring buffer and wakes up all waiting readers. Not concurrent safe.
+// Write inserts items into the ring buffer and wakes up all waiting readers to read them.
+//
+// Note: This method is not concurrent safe.
 func (rb *RingBuffer[T]) Write(item T) {
 	pos := rb.writePos.Load()
 	rb.buf[pos%rb.size] = item
@@ -147,6 +154,15 @@ func (rb *RingBuffer[T]) Write(item T) {
 	rb.writePos.Store(pos)
 
 	// Wake up all readers efficiently
+	rb.cond.Broadcast()
+}
+
+// Close closes the ring buffer and wakes up all waiting subscribers to finish reading.
+//
+// Note: This method is not concurrent safe and must be called by the writer, which
+// should also stop producing new data.
+func (rb *RingBuffer[T]) Close() {
+	close(rb.closed)
 	rb.cond.Broadcast()
 }
 
