@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -118,10 +119,8 @@ func TestRingBuf(t *testing.T) {
 
 		stream.Write(data)
 
-		if i%10 == 0 {
-			// Simulate i/o latency.
-			time.Sleep(10 * time.Millisecond)
-		}
+		// Simulate i/o latency.
+		time.Sleep(time.Duration(rand.Int31n(100)) * time.Millisecond)
 	}
 
 	wg.Wait()
