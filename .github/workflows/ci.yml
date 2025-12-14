@@ -20,7 +20,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: "go.mod"
-      - name: Test
-        run: go test ./...
-      - name: Benchmark
-        run: go test ./... -bench=.
+      - name: Tests
+        run: go test -v ./...
+      - name: Benchmarks
+        run: go test -bench=. -run=^$ ./...

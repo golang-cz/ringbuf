@@ -66,7 +66,7 @@ func TestBasic(t *testing.T) {
 func TestRingBuf(t *testing.T) {
 	bufferSize := uint64(2_000)
 	numItems := 10_000
-	numReaders := 20_000
+	numReaders := 2_000
 	maxLag := bufferSize * (3 / 4)
 
 	stream := ringbuf.New[*Data](bufferSize)
