@@ -38,7 +38,7 @@ func TestBasic(t *testing.T) {
 			sub := sub
 			defer wg.Done()
 
-			for val := range sub.Seq {
+			for val := range sub.Iter() {
 				t.Logf("%v:   Reading %+v", sub.Name, val)
 			}
 			if err := sub.Err(); !errors.Is(err, context.Canceled) {
@@ -86,7 +86,7 @@ func TestRingBuf(t *testing.T) {
 			cancel := cancel
 
 			var count int
-			for val := range sub.Seq {
+			for val := range sub.Iter() {
 				if val.ID != count {
 					t.Fatalf("unexpected data: expected %v, got %v", count, val)
 				}
@@ -154,13 +154,18 @@ func TestSkip(t *testing.T) {
 		t.Fatalf("expected to find message with ID %v", lastProcessedID)
 	}
 
+	items := make([]*Data, 1)
+
 	// Continue reading to verify we're at the right position
-	nextItem, err := sub.Next()
+	n, err := sub.Read(items)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if n != 1 {
+		t.Fatalf("unexpected n: %v", n)
+	}
 
-	if nextItem.ID != lastProcessedID+1 {
-		t.Fatalf("expected ID %v, got %d", lastProcessedID+1, nextItem.ID)
+	if items[0].ID != lastProcessedID+1 {
+		t.Fatalf("expected ID %v, got %d", lastProcessedID+1, items[0].ID)
 	}
 }

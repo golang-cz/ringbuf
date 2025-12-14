@@ -52,7 +52,7 @@ func BenchmarkReaders(b *testing.B) {
 					defer wgReader.Done()
 
 					count := 0
-					for range sub.Seq {
+					for range sub.Iter() {
 						count++
 						if count >= b.N {
 							cancel()

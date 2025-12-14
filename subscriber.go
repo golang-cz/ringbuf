@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 )
 
 var (
@@ -13,48 +14,65 @@ var (
 
 // Subscriber is an independent ring buffer reader with its own position.
 type Subscriber[T any] struct {
+	Name string
+
 	ringBuf *RingBuffer[T]
-	pos     uint64
-	maxLag  uint64
-	ctx     context.Context
-	err     error
-	Name    string
+
+	// subscriber read cursor
+	pos uint64
+	// maximum number of items the subscriber can fall behind the writer
+	maxLag uint64
+	// context to cancel the subscriber
+	ctx context.Context
+
+	// number of items to read in each .Iter() iteration
+	iterReadSize uint
+	// terminal error that stopped iteration, if any
+	iterErr error
 }
 
-func (s *Subscriber[T]) Next() (T, error) {
+// Read reads up to len(items) items into items.
+//
+// Note: If no new items are available, Read() will block until the next Write() call.
+func (s *Subscriber[T]) Read(items []T) (int, error) {
 	pos := s.pos
 	ringBuf := s.ringBuf
-	var writePos uint64
 
+	var writePos uint64
 	for {
 		writePos = ringBuf.writePos.Load()
 
-		// Check if the reader is too far behind.
+		// Return error if the reader is too far behind.
 		diff := writePos - pos
 		if diff > s.maxLag {
 			s.ringBuf.numSubscribers.Add(-1)
-			var zero T
-			return zero, fmt.Errorf("ringbuf: subscriber[%v] fell behind (pos=%v, writePos=%v, lag=%v, size=%v, %0.f%% out of max %0.f%%): %w", s.Name, pos, writePos, diff, ringBuf.size, 100*(float64(diff)/float64(ringBuf.size)), 100*(float64(s.maxLag)/float64(ringBuf.size)), ErrSubscriberTooSlow)
+			return 0, fmt.Errorf("ringbuf: subscriber[%v] fell behind (pos=%v, writePos=%v, lag=%v, size=%v, %0.f%% out of max %0.f%%): %w", s.Name, pos, writePos, diff, ringBuf.size, 100*(float64(diff)/float64(ringBuf.size)), 100*(float64(s.maxLag)/float64(ringBuf.size)), ErrSubscriberTooSlow)
 		}
 
 		// Lock-free hot path.
 		if pos < writePos {
-			// Data is available. Read next item.
-			item := ringBuf.buf[pos%ringBuf.size]
-			s.pos++
-			return item, nil
+			// Data available. Read into items.
+			start := pos % ringBuf.size
+			end := writePos % ringBuf.size
+			if end <= start {
+				end = start + 1 // Wait what???
+			}
+			availableItems := ringBuf.buf[start:end]
+
+			n := copy(items, availableItems)
+			s.pos += uint64(n)
+
+			return n, nil
 		}
 
 		// Check for end of stream.
 		select {
 		case <-s.ctx.Done():
 			s.ringBuf.numSubscribers.Add(-1)
-			var zero T
-			return zero, s.ctx.Err()
+			return 0, s.ctx.Err()
 		case <-ringBuf.closed:
 			s.ringBuf.numSubscribers.Add(-1)
-			var zero T
-			return zero, ErrRingBufferClosed
+			return 0, ErrRingBufferClosed
 		default:
 		}
 
@@ -64,34 +82,31 @@ func (s *Subscriber[T]) Next() (T, error) {
 		writePos = ringBuf.writePos.Load()
 		if pos < writePos {
 			ringBuf.mu.Unlock()
-			// Data available. Read next item.
-			item := ringBuf.buf[pos%ringBuf.size]
-			s.pos++
-			return item, nil
+
+			// Data available. Read into items.
+			start := pos % ringBuf.size
+			end := writePos % ringBuf.size
+			if end <= start {
+				end = start + 1 // Wait what???
+			}
+			availableItems := ringBuf.buf[start:end]
+
+			n := copy(items, availableItems)
+			s.pos += uint64(n)
+
+			return n, nil
+		}
+
+		select {
+		case <-ringBuf.closed:
+			s.ringBuf.numSubscribers.Add(-1)
+			return 0, ErrRingBufferClosed
+		default:
 		}
 
 		// Wait for new data. Wake up on broadcast signal and try again.
 		ringBuf.cond.Wait()
 		ringBuf.mu.Unlock()
-	}
-}
-
-// Seq returns iterator for consuming items from the buffer.
-//
-// You can use .Err() to check for errors after the iteration is done.
-func (s *Subscriber[T]) Seq(yield func(T) bool) {
-	for { // Range loop.
-		item, err := s.Next()
-		if err != nil {
-			s.err = err
-			return // Stop the range loop.
-		}
-
-		// Yield to the range body.
-		if !yield(item) {
-			// Stop iteration. The range body broke out of the loop.
-			return
-		}
 	}
 }
 
@@ -122,12 +137,39 @@ func (s *Subscriber[T]) Skip(skipCondition func(T) bool) bool {
 	return false
 }
 
-// Err returns the last error during iteration over .Seq.
+// Iter() returns iterator for consuming items from the ring buffer.
+//
+// Call .Err() to check for errors after the iteration is done.
+func (s *Subscriber[T]) Iter() iter.Seq[T] {
+	return func(yield func(T) bool) {
+		items := make([]T, s.iterReadSize)
+
+		// Range loop.
+		for {
+			n, err := s.Read(items)
+			if err != nil {
+				s.iterErr = err
+				return // Stop the range loop.
+			}
+
+			for i := range n {
+				// Yield item into the caller's range body.
+				if !yield(items[i]) {
+					// Stop iteration. The range body broke out of the loop.
+					return
+				}
+			}
+		}
+	}
+}
+
+// Err returns the terminal error that stopped iteration, if any.
+// It must be called after .Iter() completes.
 // Common errors:
 // - ErrRingBufferClosed/io.UnexpectedEOF - ring buffer was closed
 // - ErrSubscriberTooSlow/io.EOF          - subscriber fell too far behind
 // - context.Canceled/DeadlineExceeded    - subscriber context was cancelled or timed out
 // Returns nil if no error occurred.
 func (s *Subscriber[T]) Err() error {
-	return s.err
+	return s.iterErr
 }

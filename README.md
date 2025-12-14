@@ -1,17 +1,23 @@
 # ringbuf
 
-**ringbuf** is a high-performance, generic, concurrent ring buffer that supports Go 1.23 iterator syntax. It enables thousands of consumers to independently read from a live stream of data with minimal synchronization and zero-copy reads. Designed for high-throughput scenarios where readers are disposable and best-effort delivery is acceptable.
+**ringbuf** is a high-performance, generic, concurrent ring buffer. It enables thousands of consumers to independently read from a live stream of data with minimal synchronization and zero-allocation reads. Designed for high-throughput scenarios where readers are disposable and best-effort delivery is acceptable.
 
 ## Features
 
 - **Single-writer, multiple-reader design** - Optimized for one producer, many consumers
 - **Single copy of data** - Memory-efficient pub/sub pattern
-- **Lock-free write path** - High-throughput publishing with atomic operations (~10ns/op)
-- **Go 1.23 range iterator support** - Clean, idiomatic consumption
+- **Lock-free write path** - High-throughput `.Write()` with atomic operations (~5ns/op)
 - **Independent readers with tailing** - Each reader maintains its own position
-- **Zero-copy reads** - Direct access to ring buffer data
+- **Zero-allocation reads** - `Read()` copies items into caller-provided slice, same as io.Reader pattern
+- **Go 1.23 range iterator support** - `All()` returns `iter.Seq1` for clean, idiomatic consumption in range loops
 - **Optimized for thousands of readers** - Scales to 10,000+ concurrent readers
 - **Real-time data tailing** - Subscribe to live streams like `tail -f`
+
+## Design trade-offs
+
+- **Single writer only** - Use `sync.Mutex` to protect concurrent writes
+- **Slow readers fail** - Readers that fall behind (configurable, default 50% of buffer) terminate with error
+- **Readers block** - Readers block waiting for new data and wake up on each `.Write()` call
 
 ## Installation
 

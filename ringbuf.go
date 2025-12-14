@@ -35,10 +35,10 @@ type RingBuffer[T any] struct {
 	// Circular buffer storing the data items.
 	buf []T
 
-	// Size of the circular buffer.
+	// Capacity of the circular buffer.
 	size uint64
 
-	// Current write position. Incremented on each write operation.
+	// Monotonically increasing global write cursor.
 	//
 	// Design note: If writePos overflows (after approximately 5.8 years at 100M ops/sec),
 	// the overflow is handled gracefully by starting subscribers from position 0 instead
@@ -96,6 +96,9 @@ type SubscribeOpts struct {
 	// Use a lower value if the buffer size is small or if the writer is very fast
 	// (e.g. when the writer writes in batches and/or doesn't wait for I/O operations).
 	MaxBehind uint64
+
+	// Number of items the All iterator will batch read. If 0, the default value is 10.
+	IterBatchReadSize uint
 }
 
 // Subscribe creates a new reader starting from the given position.
@@ -111,6 +114,10 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		panic("ringbuf: subscriber MaxBehind must be between 10-90% of the ring buffer size, e.g. rb.Size()/2")
 	} else if opts.StartBehind > opts.MaxBehind {
 		panic("ringbuf: subscriber StartBehind > MaxBehind, must be less")
+	}
+
+	if opts.IterBatchReadSize == 0 {
+		opts.IterBatchReadSize = 10
 	}
 
 	rb.numSubscribers.Add(1)
@@ -135,17 +142,24 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 	}
 
 	return &Subscriber[T]{
-		ringBuf: rb,
-		pos:     startPos,
-		ctx:     ctx,
-		Name:    opts.Name,
-		maxLag:  opts.MaxBehind,
+		Name: opts.Name,
+
+		ringBuf:      rb,
+		pos:          startPos,
+		ctx:          ctx,
+		maxLag:       opts.MaxBehind,
+		iterReadSize: opts.IterBatchReadSize,
 	}
 }
 
 // Write inserts items into the ring buffer and wakes up all waiting readers to read them.
+// This method is not concurrent safe, the caller must synchronize calls to .Write() and .Close().
 //
-// Note: This method is not concurrent safe.
+// Subscribers can hang waiting for the broadcast signal to receive new data. If the writer
+// is not writing new data very frequently, it's recommended to flush the buffer with an empty
+// .Write() call, which will effectively wake up all subscribers.
+//
+// It's recommended to Write max 10% of the buffer size at a time to avoid overwhelming the subscribers.
 func (rb *RingBuffer[T]) Write(item T) {
 	pos := rb.writePos.Load()
 	rb.buf[pos%rb.size] = item
@@ -160,7 +174,7 @@ func (rb *RingBuffer[T]) Write(item T) {
 // Close closes the ring buffer and wakes up all waiting subscribers to finish reading.
 //
 // Note: This method is not concurrent safe and must be called by the writer, which
-// should also stop producing new data.
+// should also stop producing new data. Writing data after .Close() is undefined behavior.
 func (rb *RingBuffer[T]) Close() {
 	close(rb.closed)
 	rb.cond.Broadcast()
