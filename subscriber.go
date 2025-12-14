@@ -51,18 +51,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 
 		// Lock-free hot path.
 		if pos < writePos {
-			// Data available. Read into items.
-			start := pos % ringBuf.size
-			end := writePos % ringBuf.size
-			if end <= start {
-				end = start + 1 // Wait what???
-			}
-			availableItems := ringBuf.buf[start:end]
-
-			n := copy(items, availableItems)
-			s.pos += uint64(n)
-
-			return n, nil
+			return s.readAvailable(pos, writePos, items)
 		}
 
 		// Check for end of stream.
@@ -82,19 +71,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		writePos = ringBuf.writePos.Load()
 		if pos < writePos {
 			ringBuf.mu.Unlock()
-
-			// Data available. Read into items.
-			start := pos % ringBuf.size
-			end := writePos % ringBuf.size
-			if end <= start {
-				end = start + 1 // Wait what???
-			}
-			availableItems := ringBuf.buf[start:end]
-
-			n := copy(items, availableItems)
-			s.pos += uint64(n)
-
-			return n, nil
+			return s.readAvailable(pos, writePos, items)
 		}
 
 		select {
@@ -108,6 +85,23 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		ringBuf.cond.Wait()
 		ringBuf.mu.Unlock()
 	}
+}
+
+// readAvailable copies available items from the ring buffer into the provided slice.
+// It updates the subscriber's position and returns the number of items copied.
+func (s *Subscriber[T]) readAvailable(pos, writePos uint64, items []T) (int, error) {
+	ringBuf := s.ringBuf
+	start := pos % ringBuf.size
+	end := writePos % ringBuf.size
+	if end <= start {
+		end = start + 1 // Wait what???
+	}
+	availableItems := ringBuf.buf[start:end]
+
+	n := copy(items, availableItems)
+	s.pos += uint64(n)
+
+	return n, nil
 }
 
 // Skip fast-forwards through available items using only lock-free operations.
