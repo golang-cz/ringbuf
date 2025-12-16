@@ -87,7 +87,7 @@ func (s *Subscriber[T]) readAvailable(pos, writePos uint64, items []T) (int, err
 	start := pos % ringBuf.size
 	end := writePos % ringBuf.size
 	if end <= start {
-		end = start + 1 // Wait what???
+		end = start + 1 // TODO: Handle buffer overflow better. Can we read until the end of the buffer?
 	}
 	availableItems := ringBuf.buf[start:end]
 
