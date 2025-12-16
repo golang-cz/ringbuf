@@ -100,7 +100,7 @@ type SubscribeOpts struct {
 	MaxBehind uint64
 
 	// Number of items the Iter() iterator will batch read. If 0, the default value is 10.
-	IterBatchReadSize uint
+	IterReadSize uint
 }
 
 // Subscribe creates a new reader starting from the given position.
@@ -109,11 +109,11 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		opts = &SubscribeOpts{}
 	}
 
-	opts.MaxBehind = cmp.Or(opts.MaxBehind, rb.size/2)          // Default: 50% of buffer size
-	opts.MaxBehind = min(opts.MaxBehind, rb.size/10)            // Min: 10% of buffer size
-	opts.MaxBehind = max(opts.MaxBehind, 9*rb.size/10)          // Max: 90% of buffer size
-	opts.StartBehind = min(opts.StartBehind, opts.MaxBehind)    // Min: MaxBehind
-	opts.IterBatchReadSize = cmp.Or(opts.IterBatchReadSize, 10) // Default: 10
+	opts.MaxBehind = cmp.Or(opts.MaxBehind, rb.size/2)       // Default: 50% of buffer size
+	opts.MaxBehind = min(opts.MaxBehind, rb.size/10)         // Min: 10% of buffer size
+	opts.MaxBehind = max(opts.MaxBehind, 9*rb.size/10)       // Max: 90% of buffer size
+	opts.StartBehind = min(opts.StartBehind, opts.MaxBehind) // Min: MaxBehind
+	opts.IterReadSize = cmp.Or(opts.IterReadSize, 10)        // Default: 10
 
 	rb.numSubscribers.Add(1)
 
@@ -137,12 +137,12 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 	}
 
 	return &Subscriber[T]{
-		Name:        opts.Name,
-		buf:         rb,
-		pos:         startPos,
-		ctx:         ctx,
-		maxLag:      opts.MaxBehind,
-		iterBufSize: opts.IterBatchReadSize,
+		Name:         opts.Name,
+		buf:          rb,
+		pos:          startPos,
+		ctx:          ctx,
+		maxLag:       opts.MaxBehind,
+		iterReadSize: opts.IterReadSize,
 	}
 }
 

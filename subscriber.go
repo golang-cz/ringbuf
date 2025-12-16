@@ -16,12 +16,12 @@ var (
 type Subscriber[T any] struct {
 	Name string
 
-	buf         *RingBuffer[T]
-	pos         uint64
-	maxLag      uint64
-	ctx         context.Context
-	iterBufSize uint
-	iterErr     error
+	buf          *RingBuffer[T]
+	pos          uint64
+	maxLag       uint64
+	ctx          context.Context
+	iterReadSize uint
+	iterErr      error
 }
 
 // Read reads up to len(items) items into items.
@@ -130,7 +130,7 @@ func (s *Subscriber[T]) Skip(skipCondition func(T) bool) bool {
 // Call .Err() to check for errors after the iteration is done.
 func (s *Subscriber[T]) Iter() iter.Seq[T] {
 	return func(yield func(T) bool) {
-		items := make([]T, s.iterBufSize)
+		items := make([]T, s.iterReadSize)
 
 		// Range loop.
 		for {

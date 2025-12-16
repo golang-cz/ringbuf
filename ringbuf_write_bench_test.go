@@ -10,12 +10,12 @@ import (
 	"github.com/golang-cz/ringbuf"
 )
 
-// BenchmarkWriteOneNoReaders measures write performance
-func BenchmarkWriteOneNoReaders(b *testing.B) {
+// BenchmarkWriteThroughputNoReaders measures performance of writes with no readers.
+func BenchmarkWriteThroughputNoReaders(b *testing.B) {
 	bufferSizes := []uint64{1_000, 10_000, 100_000, 1_000_000}
 
 	for _, bufferSize := range bufferSizes {
-		b.Run(fmt.Sprintf("BufferSize_%d", bufferSize), func(b *testing.B) {
+		b.Run(fmt.Sprintf("size_%d", bufferSize), func(b *testing.B) {
 			stream := ringbuf.New[int](bufferSize)
 
 			b.ResetTimer()
@@ -28,12 +28,12 @@ func BenchmarkWriteOneNoReaders(b *testing.B) {
 	}
 }
 
-// BenchmarkWriteBatchNoReaders measures write performance of a batch of 100 items
-func BenchmarkWriteBatchNoReaders(b *testing.B) {
+// BenchmarkWriteBatchThroughputNoReaders measures performance of batch writes with no readers.
+func BenchmarkWriteBatchThroughputNoReaders(b *testing.B) {
 	bufferSizes := []uint64{1_000, 10_000, 100_000, 1_000_000}
 
 	for _, bufferSize := range bufferSizes {
-		b.Run(fmt.Sprintf("BufferSize_%d", bufferSize), func(b *testing.B) {
+		b.Run(fmt.Sprintf("size_%d", bufferSize), func(b *testing.B) {
 			stream := ringbuf.New[int](bufferSize)
 
 			b.ResetTimer()
@@ -57,13 +57,14 @@ func BenchmarkWriteBatchNoReaders(b *testing.B) {
 	}
 }
 
-// BenchmarkWriteOne measures performance of writer with multiple readers
-func BenchmarkWriteOne(b *testing.B) {
+// BenchmarkWriteThroughputWithReaders measures performance of writes with multiple connected readers.
+// NOTE: This benchmark doesn't measure read throughput and the readers may fall behind with errors.
+func BenchmarkWriteThroughputWithReaders(b *testing.B) {
 	bufferSize := uint64(1_000)
 	numReaders := []int{1, 10, 100, 1_000, 10_000, 20_000}
 
 	for _, readers := range numReaders {
-		b.Run(fmt.Sprintf("Readers_%d", readers), func(b *testing.B) {
+		b.Run(fmt.Sprintf("subs_%d", readers), func(b *testing.B) {
 			stream := ringbuf.New[int](bufferSize)
 
 			// Start multiple readers.
