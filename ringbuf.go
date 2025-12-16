@@ -73,8 +73,8 @@ type SubscribeOpts struct {
 	//
 	// Note: In the extremely rare case of buffer write position overflow (after 2^64 writes),
 	// the new subscribers will start reading from position 0 instead of the intended historical
-	// position. This compromise was made intentionally to maximize write throughput by
-	// avoiding additional atomic operations. Overflow is extremely rare:
+	// position and ignore StartBehind option. This compromise was made intentionally to maximize
+	// write throughput by avoiding additional atomic operations. Overflow is extremely rare:
 	//
 	// - At 100M writes/sec: overflow occurs after ~5.8 years
 	// - At   1B writes/sec: overflow occurs after ~584 days
@@ -88,15 +88,15 @@ type SubscribeOpts struct {
 	// It acts as a read/write barrier to prevent data corruption.
 	//
 	// If the subscriber falls more than MaxBehind items behind the writer, it will be terminated
-	// with an error. This prevents the writer from overwriting data that slow readers
-	// are still trying to read.
+	// with an error. This prevents the writer from overwriting data that slow readers are still
+	// trying to read.
 	//
-	// If 0 is provided, the default value is set to 50% of the buffer size.
+	// Use a higher value (max 90% of buffer size) to tolerate bursty/fast writers and slower readers.
+	// Use a lower value (min 10% of buffer size) to keep subscribers closer to the head.
+	//
+	// If 0 is provided, the default value is set to 50% of the buffer size. If the value provided
 	// If the value provided is not between 10-90% of the buffer size, it will be automatically
 	// adjusted to ensure readers have enough time to process data before the writer overwrites it.
-	//
-	// Use a lower value if the buffer size is small or if the writer is very fast
-	// (e.g. when the writer writes in batches and/or doesn't wait for I/O operations).
 	MaxBehind uint64
 
 	// Number of items the Iter() iterator will batch read. If 0, the default value is 10.
@@ -110,9 +110,9 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 	}
 
 	opts.MaxBehind = cmp.Or(opts.MaxBehind, rb.size/2)       // Default: 50% of buffer size
-	opts.MaxBehind = min(opts.MaxBehind, rb.size/10)         // Min: 10% of buffer size
-	opts.MaxBehind = max(opts.MaxBehind, 9*rb.size/10)       // Max: 90% of buffer size
-	opts.StartBehind = min(opts.StartBehind, opts.MaxBehind) // Min: MaxBehind
+	opts.MaxBehind = max(opts.MaxBehind, rb.size/10)         // Min: 10% of buffer size
+	opts.MaxBehind = min(opts.MaxBehind, 9*rb.size/10)       // Max: 90% of buffer size
+	opts.StartBehind = min(opts.StartBehind, opts.MaxBehind) // Max: MaxBehind
 	opts.IterReadSize = cmp.Or(opts.IterReadSize, 10)        // Default: 10
 
 	rb.numSubscribers.Add(1)

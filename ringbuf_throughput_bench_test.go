@@ -21,7 +21,7 @@ import (
 // go test -bench=BenchmarkThroughput -run=^$ -buffer_size=200000 -subscribers=1,10,100,1_000,10_000,50_000,100_000 -write_rate=1000 -write_batch=100 -read_batch=100 .
 
 var (
-	benchSubscriberCounts = &SliceFlag[int]{
+	flagSubscriberCounts = &SliceFlag[int]{
 		Values: []int{1, 10, 100, 1_000, 10_000},
 		Parse: func(value string) (int, error) {
 			value = strings.ReplaceAll(strings.TrimSpace(value), "_", "")
@@ -29,31 +29,34 @@ var (
 		},
 	}
 
-	benchBufferSize       = flag.Uint64("buffer_size", 500_000, "Ring buffer size used by throughput benchmarks.")
-	benchWriterRatePerSec = flag.Int("write_rate", 100, "Write rate limit in writes/sec (0 = unlimited). Use this to keep readers from falling behind.")
-	benchWriteBatch       = flag.Int("write_batch", 100, "Subscriber Write() batch size used by throughput benchmarks.")
-	benchReadBatch        = flag.Int("read_batch", 100, "Subscriber Read() batch size used by throughput benchmarks.")
+	flagBufferSize       = flag.Uint64("buffer_size", 500_000, "Ring buffer size used by throughput benchmarks.")
+	flagWriterRatePerSec = flag.Int("write_rate", 100, "Write rate limit in writes/sec (0 = unlimited). Use this to keep readers from falling behind.")
+	flagWriteBatch       = flag.Int("write_batch", 100, "Subscriber Write() batch size used by throughput benchmarks.")
+	flagReadBatch        = flag.Int("read_batch", 100, "Subscriber Read() batch size used by throughput benchmarks.")
 )
 
 func init() {
-	flag.Var(benchSubscriberCounts, "subscribers", "Comma-separated list of subscriber counts (e.g. 1,10,100,1_000). Underscores are allowed.")
+	flag.Var(flagSubscriberCounts, "subscribers", "Comma-separated list of subscriber counts (e.g. 1,10,100,1_000). Underscores are allowed.")
 }
 
 // BenchmarkThroughput measures end-to-end fan-out throughput: 1 writer produces items
 // and N subscribers concurrently consume them.
 //
 // Reported metrics:
-// - writes/s: writer throughput (rate-limited if -writer_rate is set)
+// - writes/s: writer throughput (rate-limited by -writer_rate)
 // - reads/s: total delivered reads across all subscribers
-// - reads/write: delivered reads per write (should be ~= subscribers if nobody falls behind)
+// - errors: number of subscribers that failed (e.g. were too slow and fell behind)
 //
 // Tuning:
+// - Use -subscribers=<n> to adjust the number of subscribers.
 // - Use -writer_rate=<writes/sec> to slow the writer down until readers keep up.
+// - Use -buffer_size=<n> to adjust the ring buffer size.
+// - Use -write_batch=<n> to adjust writer batching behavior.
 // - Use -read_batch=<n> to adjust subscriber batching behavior.
 func BenchmarkThroughput(b *testing.B) {
-	for _, subs := range benchSubscriberCounts.Values {
+	for _, subs := range flagSubscriberCounts.Values {
 		b.Run(fmt.Sprintf("subscribers_%d", subs), func(b *testing.B) {
-			stream := ringbuf.New[uint64](*benchBufferSize)
+			stream := ringbuf.New[uint64](*flagBufferSize)
 
 			// Shared stats + first error.
 			var deliveredReads atomic.Uint64
@@ -83,14 +86,14 @@ func BenchmarkThroughput(b *testing.B) {
 
 				sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 					Name:         fmt.Sprintf("sub-%d", i),
-					MaxBehind:    *benchBufferSize * 9 / 10, // Allow readers to fall behind, but fail fast if they can't keep up.
-					IterReadSize: uint(*benchReadBatch),
+					MaxBehind:    *flagBufferSize * 9 / 10, // Allow readers to fall behind, but fail fast if they can't keep up.
+					IterReadSize: uint(*flagReadBatch),
 				})
 
 				go func() {
 					defer wgReaders.Done()
 
-					items := make([]uint64, *benchReadBatch)
+					items := make([]uint64, *flagReadBatch)
 					wgReady.Done()
 					<-start
 
@@ -113,7 +116,7 @@ func BenchmarkThroughput(b *testing.B) {
 			close(start)
 
 			// Writer pacing (optional).
-			rate := *benchWriterRatePerSec
+			rate := *flagWriterRatePerSec
 			var interval time.Duration
 			if rate > 0 {
 				interval = time.Second / time.Duration(rate)
@@ -133,7 +136,7 @@ func BenchmarkThroughput(b *testing.B) {
 						time.Sleep(d)
 					}
 				}
-				stream.Write(slices.Repeat([]uint64{uint64(i)}, int(*benchWriteBatch))...)
+				stream.Write(slices.Repeat([]uint64{uint64(i)}, int(*flagWriteBatch))...)
 			}
 			elapsed := time.Since(t0)
 			b.StopTimer()
@@ -171,7 +174,7 @@ func BenchmarkThroughput(b *testing.B) {
 			}
 
 			// Report metrics.
-			writes := float64(b.N * int(*benchWriteBatch))
+			writes := float64(b.N * int(*flagWriteBatch))
 			reads := float64(deliveredReads.Load())
 			secs := cmp.Or(elapsed.Seconds(), 1e-9) // Avoid division by zero.
 
