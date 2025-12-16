@@ -59,10 +59,9 @@ import (
 )
 
 func main() {
-	// Ring buffer
 	stream := ringbuf.New[string](1000)
 
-	// Writer
+	// Producer (writer)
 	go func() {
 		defer stream.Close()
 
@@ -72,15 +71,15 @@ func main() {
 		}
 	}()
 
-	// Reader
+	// Consumer (subscriber)
 	sub := stream.Subscribe(context.TODO(), nil)
-	
+
 	for event := range sub.Iter() {
-		fmt.Println("Received:", event)
+		fmt.Println(event)
 	}
-	
+
 	if sub.Err() != nil {
-		log.Fatal("Reader fell behind:", sub.Err())
+		log.Fatal("Subscriber fell behind:", sub.Err())
 	}
 }
 ```
@@ -113,17 +112,17 @@ If you need guaranteed delivery, persistence, replay, or backpressure, this is n
 - **Scalability**: Optimized for thousands of concurrent readers (1-10,000 readers at ~5 ns/op)
 - **Latency**: Sub-microsecond read/write operations in common scenarios
 - **Write-throughput**: 200M+ writes/sec on modern hardware (assuming readers can keep up)
-- **Read-throughput**: 5B+ reads/sec on on modern hardware (e.g. 50k subscribers)
+- **Read-throughput**: 5B+ reads/sec on modern hardware (e.g. 50k subscribers)
 
 ## Benchmarks
 
-Performance heavily depends on hardware and on your ring buffer / subscriber configuration. Batched writes generally perform better because they wake readers less often. The bigger the ring buffer size, the more concurrent readers will be able to keep up with the writer's pace (e.g. survive burst writes). With a sufficiently large buffer, it's often OK to allow subscribers to lag behind the head by up to ~90% of the buffer size.
+Performance heavily depends on hardware and your ring buffer / subscriber configuration. Batched writes generally perform better because they wake readers less often. The bigger the ring buffer size, the more concurrent readers will be able to keep up with the writer's pace (e.g. survive burst writes). With a sufficiently large buffer, it's often OK to allow subscribers to lag behind the head by up to ~90% of the buffer size.
 
-In real world scenarios, the subscribers will likely be limited by I/O, JSON marshallers, or by writing response to slow HTTP clients. Ringbuf is designed to allow slow readers and fail gracefully if they cannot keep up without putting any backpressure on the writer and other subscribers.
+In real-world scenarios, the subscribers will likely be limited by I/O, JSON marshaling, or by writing responses to slow HTTP clients. ringbuf is designed to allow slow readers and fail gracefully if they cannot keep up without putting any backpressure on the writer and other subscribers.
 
 We strongly advise users to tune their configuration based on testing.
 
-For example, see the following in-memory throughput benchmark on Macbook M5. Here we rate-limit the writer to ~1,000 `Write()` calls/sec; and we write batches of 100 messages, that is ~100,000 `uint64` messages/sec in total. We allow readers to read a batch of up to 100 messages at a time.
+For example, see the following in-memory throughput benchmark on MacBook M5. Here we rate-limit the writer to ~1,000 `Write()` calls/sec; and we write batches of 100 messages, that is ~100,000 `uint64` messages/sec in total. We allow readers to read a batch of up to 100 messages at a time.
 
 ```
 $ go test -bench=BenchmarkThroughput -run=^$ -buffer_size=200000 -subscribers=1,10,100,1_000,10_000,50_000,100_000 -write_rate=1000 -write_batch=100 -read_batch=100 .
@@ -131,24 +130,50 @@ goos: darwin
 goarch: arm64
 pkg: github.com/golang-cz/ringbuf
 cpu: Apple M5
-BenchmarkThroughput/subscribers_1-10         	    1209	    999287 ns/op	         0 errors	    100071 reads/s	    100071 writes/s
-BenchmarkThroughput/subscribers_10-10        	    1209	    999282 ns/op	         0 errors	   1000719 reads/s	    100072 writes/s
-BenchmarkThroughput/subscribers_100-10       	    1209	    999282 ns/op	         0 errors	  10007191 reads/s	    100072 writes/s
-BenchmarkThroughput/subscribers_1000-10      	    1209	    999279 ns/op	         0 errors	 100072250 reads/s	    100072 writes/s
-BenchmarkThroughput/subscribers_10000-10     	    1207	    999344 ns/op	         0 errors	1000656396 reads/s	    100066 writes/s
-BenchmarkThroughput/subscribers_50000-10     	    1210	    999651 ns/op	         0 errors	5001744580 reads/s	    100035 writes/s
-BenchmarkThroughput/subscribers_100000-10    	      79	  36636800 ns/op	         0 errors	 272949625 reads/s	      2729 writes/s
+BenchmarkThroughput/subscribers_1-10          100071 writes/s	      100071 reads/s	  0 errors	 1209	    999287 ns/op
+BenchmarkThroughput/subscribers_10-10         100072 writes/s	     1000719 reads/s	  0 errors	 1209	    999282 ns/op
+BenchmarkThroughput/subscribers_100-10        100072 writes/s	    10007191 reads/s	  0 errors	 1209	    999282 ns/op
+BenchmarkThroughput/subscribers_1000-10       100072 writes/s	   100072250 reads/s	  0 errors	 1209	    999279 ns/op
+BenchmarkThroughput/subscribers_10000-10      100066 writes/s	  1000656396 reads/s	  0 errors	 1207	    999344 ns/op
+BenchmarkThroughput/subscribers_50000-10      100035 writes/s	  5001744580 reads/s	  0 errors	 1210	    999651 ns/op
+BenchmarkThroughput/subscribers_100000-10       2729 writes/s	   272949625 reads/s	  0 errors	   79	  36636800 ns/op
 PASS
 ok  	github.com/golang-cz/ringbuf	13.680s
 ```
 
-We can see that 50,000 subcribers were able to keep up with the writer and read a total of ~5,000,000,000 messages/sec with no subscriber falling behind (`errors=0`). However, at 100,000 subscribers, we can see that the system overloaded and the overall throughput degraded. The buffer size was quite generous, and we still didn't see any errors. However, if we decreased the buffer size, we'd likely see subscribers falling behind.
+We can see that 50,000 subscribers were able to keep up with the writer and read a total of ~5,000,000,000 messages/sec with no subscriber falling behind (`errors=0`). However, at 100,000 subscribers, we can see that the system was overloaded and the overall throughput degraded. The buffer size was quite generous, and we still didn't see any errors. However, if we decreased the buffer size, we'd likely see subscribers falling behind.
 
 ## Examples
 
 ### Batch Writes/Reads
 
-- TODO
+Write batches to reduce wakeups (and amortize overhead):
+
+```go
+// Producer: batch write.
+events := []string{"event-1", "event-2", "event-3"}
+stream.Write(events...) // variadic
+```
+
+Read in a loop into a caller-managed slice (0 allocations on the hot path):
+
+```go
+// Consumer: batch read.
+sub := stream.Subscribe(ctx)
+
+events := make([]string, 100)
+for {
+	n, err := sub.Read(events)
+	if err != nil {
+		// err is typically ringbuf.ErrRingBufferClosed, ringbuf.ErrSubscriberTooSlow, or ctx error.
+		break
+	}
+
+	for i := range n {
+		handle(events[i])
+	}
+}
+```
 
 ### Stream Historical Data
 
@@ -198,12 +223,12 @@ func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], 
 		fmt.Printf("Failed to resume by last message ID %d", lastMsgID)
 		return
 	}
-	
+
 	// Resume processing.
 	for msg := range sub.Iter() {
 		fmt.Printf("Processing message %d: %s\n", msg.ID, msg.Data)
 	}
-	
+
 	if sub.Err() != nil {
 		fmt.Printf("Subscriber error: %v\n", sub.Err())
 	}
