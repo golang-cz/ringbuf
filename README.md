@@ -7,6 +7,7 @@
 - [Quick Start](#quick-start)
 - [Design Philosophy](#design-philosophy)
 - [Performance Characteristics](#performance-characteristics)
+- [Benchmarks](#benchmarks)
 - [Examples](#examples)
 	- [Batch Writes/Reads](#batch-writesreads)
 	- [Stream Historical Data](#stream-historical-data)
@@ -111,25 +112,37 @@ If you need guaranteed delivery, persistence, replay, or backpressure, this is n
 - **Memory**: No memory allocations during data reads (0 B/op)
 - **Scalability**: Optimized for thousands of concurrent readers (1-10,000 readers at ~5 ns/op)
 - **Latency**: Sub-microsecond read/write operations in common scenarios
-- **Throughput**: 200M+ operations per second on modern hardware
+- **Write-throughput**: 200M+ writes/sec on modern hardware (assuming readers can keep up)
+- **Read-throughput**: 5B+ reads/sec on on modern hardware (e.g. 50k subscribers)
+
+## Benchmarks
+
+Performance heavily depends on hardware and on your ring buffer / subscriber configuration. Batched writes generally perform better because they wake readers less often. The bigger the ring buffer size, the more concurrent readers will be able to keep up with the writer's pace (e.g. survive burst writes). With a sufficiently large buffer, it's often OK to allow subscribers to lag behind the head by up to ~90% of the buffer size.
+
+In real world scenarios, the subscribers will likely be limited by I/O, JSON marshallers, or by writing response to slow HTTP clients. Ringbuf is designed to allow slow readers and fail gracefully if they cannot keep up without putting any backpressure on the writer and other subscribers.
+
+We strongly advise users to tune their configuration based on testing.
+
+For example, see the following in-memory throughput benchmark on Macbook M5. Here we rate-limit the writer to ~1,000 `Write()` calls/sec; and we write batches of 100 messages, that is ~100,000 `uint64` messages/sec in total. We allow readers to read a batch of up to 100 messages at a time.
 
 ```
-go test -bench=. -benchmem -run=^$
+$ go test -bench=BenchmarkThroughput -run=^$ -buffer_size=200000 -subscribers=1,10,100,1_000,10_000,50_000,100_000 -write_rate=1000 -write_batch=100 -read_batch=100 .
 goos: darwin
 goarch: arm64
 pkg: github.com/golang-cz/ringbuf
-cpu: Apple M2
-BenchmarkWriteOnly/BufferSize_1000-8         	240796418	         4.744 ns/op	       0 B/op	       0 allocs/op
-BenchmarkWriteOnly/BufferSize_10000-8        	253082376	         4.773 ns/op	       0 B/op	       0 allocs/op
-BenchmarkWriteOnly/BufferSize_100000-8       	253053534	         4.727 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_1-8                 	261524536	         4.599 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_10-8                	260881426	         4.567 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_100-8               	259058947	         4.626 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_1000-8              	215782249	         4.814 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReaders/Readers_10000-8             	223414704	         4.883 ns/op	       0 B/op	       0 allocs/op
+cpu: Apple M5
+BenchmarkThroughput/subscribers_1-10         	    1209	    999287 ns/op	         0 errors	    100071 reads/s	    100071 writes/s
+BenchmarkThroughput/subscribers_10-10        	    1209	    999282 ns/op	         0 errors	   1000719 reads/s	    100072 writes/s
+BenchmarkThroughput/subscribers_100-10       	    1209	    999282 ns/op	         0 errors	  10007191 reads/s	    100072 writes/s
+BenchmarkThroughput/subscribers_1000-10      	    1209	    999279 ns/op	         0 errors	 100072250 reads/s	    100072 writes/s
+BenchmarkThroughput/subscribers_10000-10     	    1207	    999344 ns/op	         0 errors	1000656396 reads/s	    100066 writes/s
+BenchmarkThroughput/subscribers_50000-10     	    1210	    999651 ns/op	         0 errors	5001744580 reads/s	    100035 writes/s
+BenchmarkThroughput/subscribers_100000-10    	      79	  36636800 ns/op	         0 errors	 272949625 reads/s	      2729 writes/s
 PASS
-ok  	github.com/golang-cz/ringbuf	90.781
+ok  	github.com/golang-cz/ringbuf	13.680s
 ```
+
+We can see that 50,000 subcribers were able to keep up with the writer and read a total of ~5,000,000,000 messages/sec with no subscriber falling behind (`errors=0`). However, at 100,000 subscribers, we can see that the system overloaded and the overall throughput degraded. The buffer size was quite generous, and we still didn't see any errors. However, if we decreased the buffer size, we'd likely see subscribers falling behind.
 
 ## Examples
 
