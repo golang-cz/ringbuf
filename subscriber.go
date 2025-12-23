@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"iter"
-	"log"
 )
 
 var (
@@ -17,12 +16,12 @@ var (
 type Subscriber[T any] struct {
 	Name string
 
-	buf          *RingBuffer[T]
-	pos          uint64
-	maxLag       uint64
-	ctx          context.Context
-	iterReadSize uint
-	iterErr      error
+	ringBuf       *RingBuffer[T]
+	pos           uint64
+	maxLag        uint64
+	ctx           context.Context
+	iterBatchSize uint
+	iterErr       error
 }
 
 // Read reads up to len(items) items into items.
@@ -30,7 +29,7 @@ type Subscriber[T any] struct {
 // Note: If no new items are available, Read() will block until the next Write() call.
 func (s *Subscriber[T]) Read(items []T) (int, error) {
 	pos := s.pos
-	ringBuf := s.buf
+	ringBuf := s.ringBuf
 
 	var writePos uint64
 	for {
@@ -39,23 +38,22 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		// Return error if the reader is too far behind.
 		diff := writePos - pos
 		if diff > s.maxLag {
-			s.buf.numSubscribers.Add(-1)
+			s.ringBuf.numSubscribers.Add(-1)
 			return 0, fmt.Errorf("ringbuf: subscriber[%v] fell behind (pos=%v, writePos=%v, lag=%v, size=%v, %0.f%% out of max %0.f%%): %w", s.Name, pos, writePos, diff, ringBuf.size, 100*(float64(diff)/float64(ringBuf.size)), 100*(float64(s.maxLag)/float64(ringBuf.size)), ErrSubscriberTooSlow)
 		}
 
 		// Lock-free hot path.
 		if pos != writePos {
-			log.Printf("subscriber[%v] readAvailable(pos=%v, writePos=%v)", s.Name, pos, writePos)
 			return s.readAvailable(pos, writePos, items)
 		}
 
 		// Check for end of stream.
 		select {
 		case <-s.ctx.Done():
-			s.buf.numSubscribers.Add(-1)
+			s.ringBuf.numSubscribers.Add(-1)
 			return 0, s.ctx.Err()
 		case <-ringBuf.closed:
-			s.buf.numSubscribers.Add(-1)
+			s.ringBuf.numSubscribers.Add(-1)
 			return 0, ErrWriterFinished
 		default:
 		}
@@ -66,13 +64,12 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		writePos = ringBuf.writePos.Load()
 		if pos != writePos {
 			ringBuf.mu.Unlock()
-			log.Printf("subscriber[%v] readAvailable(pos=%v, writePos=%v)", s.Name, pos, writePos)
 			return s.readAvailable(pos, writePos, items)
 		}
 
 		select {
 		case <-ringBuf.closed:
-			s.buf.numSubscribers.Add(-1)
+			s.ringBuf.numSubscribers.Add(-1)
 			return 0, ErrWriterFinished
 		default:
 		}
@@ -86,7 +83,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 // readAvailable copies available items from the ring buffer into the provided slice.
 // It updates the subscriber's position and returns the number of items copied.
 func (s *Subscriber[T]) readAvailable(pos, writePos uint64, items []T) (int, error) {
-	ringBuf := s.buf
+	ringBuf := s.ringBuf
 	start := pos % ringBuf.size
 	end := writePos % ringBuf.size
 	if end <= start {
@@ -110,7 +107,7 @@ func (s *Subscriber[T]) readAvailable(pos, writePos uint64, items []T) (int, err
 // Returns true if the subscriber was positioned at a new item.
 // Returns false if no such item was found - reconnection failed, subscriber will only get new data.
 func (s *Subscriber[T]) Skip(skipCondition func(T) bool) bool {
-	ringBuf := s.buf
+	ringBuf := s.ringBuf
 	writePos := ringBuf.writePos.Load()
 
 	// Only process items that are already written (lock-free hot path).
@@ -133,7 +130,7 @@ func (s *Subscriber[T]) Skip(skipCondition func(T) bool) bool {
 // Call .Err() to check for errors after the iteration is done.
 func (s *Subscriber[T]) Iter() iter.Seq[T] {
 	return func(yield func(T) bool) {
-		items := make([]T, s.iterReadSize)
+		items := make([]T, s.iterBatchSize)
 
 		// Range loop.
 		for {

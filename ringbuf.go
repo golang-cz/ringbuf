@@ -3,7 +3,6 @@ package ringbuf
 import (
 	"cmp"
 	"context"
-	"log"
 	"sync"
 	"sync/atomic"
 )
@@ -35,13 +34,12 @@ type RingBuffer[T any] struct {
 	// Capacity of the circular buffer.
 	size uint64
 
-	// Monotonically increasing global write cursor.
-	//
-	// Design note: If writePos overflows (after approximately 5.8 years at 100M writes/sec),
-	// the overflow is handled gracefully. The new historical subscribers (StartBehind>0)
-	// will start from position 0 instead of the intended position. This is an acceptable
-	// compromise to maximize the write throughput.
+	// Global write cursor (next position to write).
 	writePos atomic.Uint64
+
+	// Increments when writePos overflows (wraps around).
+	// Used to detect if subscriber can read historical data from end of the buffer.
+	writeEpoch atomic.Uint64
 
 	// Number of active subscribers. Used for metrics and debugging.
 	// Note: A signed integer, so we can decrement the counter by .Add(-1).
@@ -88,7 +86,7 @@ type SubscribeOpts struct {
 	MaxBehind uint64
 
 	// Number of items the Iter() iterator will batch read. If 0, the default value is 64.
-	IterReadSize uint
+	IterBatchSize uint
 }
 
 // Subscribe creates a new reader starting from the given position.
@@ -97,18 +95,25 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		opts = &SubscribeOpts{}
 	}
 
-	opts.MaxBehind = cmp.Or(opts.MaxBehind, rb.size/2)       // Default: 50% of buffer size
-	opts.MaxBehind = min(opts.MaxBehind, 9*rb.size/10)       // Max: 90% of buffer size
-	opts.StartBehind = min(opts.StartBehind, opts.MaxBehind) // Max: MaxBehind
-	opts.IterReadSize = cmp.Or(opts.IterReadSize, 64)        // Default: 64 items
+	maxBehind := cmp.Or(opts.MaxBehind, rb.size/2)  // Default: 50% of buffer size
+	maxBehind = min(maxBehind, 9*rb.size/10)        // Max: 90% of buffer size
+	startBehind := min(opts.StartBehind, maxBehind) // Max: maxBehind
+	iterBatchSize := cmp.Or(opts.IterBatchSize, 64) // Default: 64 items
+
+	writePos := rb.writePos.Load()
+	startPos := writePos - startBehind
+	if startPos > writePos && rb.writeEpoch.Load() == 0 {
+		// Underflow: No historical data available, start from the beginning of the buffer.
+		startPos = 0
+	}
 
 	sub := &Subscriber[T]{
-		Name:         opts.Name,
-		buf:          rb,
-		pos:          rb.writePos.Load() - opts.StartBehind,
-		ctx:          ctx,
-		maxLag:       opts.MaxBehind,
-		iterReadSize: opts.IterReadSize,
+		Name:          opts.Name,
+		ringBuf:       rb,
+		pos:           startPos,
+		ctx:           ctx,
+		maxLag:        maxBehind,
+		iterBatchSize: iterBatchSize,
 	}
 
 	rb.numSubscribers.Add(1)
@@ -130,8 +135,12 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 		rb.buf[(pos+uint64(i))%rb.size] = item
 	}
 
-	rb.writePos.Store(pos + uint64(len(items)))
-	log.Printf("writer: write(writePos=%v)", pos+uint64(len(items)))
+	writePos := pos + uint64(len(items))
+	if writePos < pos {
+		// writePos overflowed, increment the epoch.
+		rb.writeEpoch.Add(1)
+	}
+	rb.writePos.Store(writePos)
 
 	// Wake up all subscribers.
 	rb.cond.Broadcast()
