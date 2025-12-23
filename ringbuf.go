@@ -10,17 +10,15 @@ import (
 
 // New creates a ring buffer for items of type T with the given buffer size.
 //
-// The size should typically be in an order of 1k+ to leverage the performance
-// benefits of ringbuf, while keeping the readers from falling behind.
+// Pick a size large enough to absorb write bursts. A subscriber's MaxBehind is capped
+// at 90% of the buffer size, so a larger buffer lets slow subscribers fall further
+// behind before they are dropped.
 //
-// The minimal required size is 100.
+// The minimal size is 100; smaller values are rounded up to 100.
 func New[T any](size uint64) *RingBuffer[T] {
-	if size < 100 {
-		panic("ringbuf: size must be >= 100")
-	}
 	rb := &RingBuffer[T]{
 		buf:    make([]T, size),
-		size:   uint64(size),
+		size:   max(size, 100),
 		closed: make(chan struct{}),
 	}
 	rb.cond = sync.NewCond(&rb.mu)
@@ -118,7 +116,7 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 }
 
 // Write inserts items into the ring buffer and wakes up all waiting subscribers to read them.
-// This method is not concurrent safe, the caller must synchronize calls to .Write() and .Close().
+// This method is not concurrent safe, the caller must synchronize calls to Write() and Close().
 //
 // Subscribers can block waiting for new data. If the writer is idle, call Write() with zero items
 // to wake subscribers so they can observe context cancellation.
@@ -145,8 +143,8 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 // ErrWriterFinished (effectively io.EOF). New subscriptions are still allowed after Close; they
 // never wait for new data, so they won't block.
 //
-// Same as .Write(), this method is not concurrent safe. After calling Close, the writer must stop
-// producing new data. Writing new data later results in undefined behavior.
+// Same as .Write(), this method is not concurrent safe. After calling Close(), the writer must
+// stop producing new data. Writing new data later results in undefined behavior.
 func (rb *RingBuffer[T]) Close() {
 	close(rb.closed)
 	rb.cond.Broadcast()
