@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"log"
 )
 
 var (
 	ErrSubscriberTooSlow = fmt.Errorf("ringbuf: subscriber is too slow: %w", io.ErrUnexpectedEOF)
-	ErrRingBufferClosed  = fmt.Errorf("ringbuf: ring buffer is closed: %w", io.EOF)
+	ErrWriterFinished    = fmt.Errorf("ringbuf: writer finished producing new data: %w", io.EOF)
 )
 
 // Subscriber is an independent ring buffer reader maintaining its own position.
@@ -43,7 +44,8 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		}
 
 		// Lock-free hot path.
-		if pos < writePos {
+		if pos != writePos {
+			log.Printf("subscriber[%v] readAvailable(pos=%v, writePos=%v)", s.Name, pos, writePos)
 			return s.readAvailable(pos, writePos, items)
 		}
 
@@ -54,7 +56,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 			return 0, s.ctx.Err()
 		case <-ringBuf.closed:
 			s.buf.numSubscribers.Add(-1)
-			return 0, ErrRingBufferClosed
+			return 0, ErrWriterFinished
 		default:
 		}
 
@@ -62,15 +64,16 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		ringBuf.mu.Lock()
 
 		writePos = ringBuf.writePos.Load()
-		if pos < writePos {
+		if pos != writePos {
 			ringBuf.mu.Unlock()
+			log.Printf("subscriber[%v] readAvailable(pos=%v, writePos=%v)", s.Name, pos, writePos)
 			return s.readAvailable(pos, writePos, items)
 		}
 
 		select {
 		case <-ringBuf.closed:
 			s.buf.numSubscribers.Add(-1)
-			return 0, ErrRingBufferClosed
+			return 0, ErrWriterFinished
 		default:
 		}
 
