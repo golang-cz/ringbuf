@@ -3,6 +3,7 @@ package ringbuf
 import (
 	"cmp"
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 )
@@ -71,18 +72,6 @@ type SubscribeOpts struct {
 	//
 	// StartBehind must be less than or equal to MaxBehind, as the historical data
 	// cannot be older than the read/write barrier defined by MaxBehind.
-	//
-	// Note: In the extremely rare case of buffer write position overflow (after 2^64 writes),
-	// the new subscribers will start reading from position 0 instead of the intended historical
-	// position and ignore StartBehind option. This compromise was made intentionally to maximize
-	// write throughput by avoiding additional atomic operations. Overflow is extremely rare:
-	//
-	// - At 100M writes/sec: overflow occurs after ~5.8 years
-	// - At   1B writes/sec: overflow occurs after ~584 days
-	// - At  10B writes/sec: overflow occurs after ~58 days
-	//
-	// The overflow case is handled gracefully by starting new subscribers from position 0,
-	// which ensures the subscriber continues to read data without errors.
 	StartBehind uint64
 
 	// MaxBehind is the maximum number of items the subscriber can fall behind the writer.
@@ -92,12 +81,12 @@ type SubscribeOpts struct {
 	// with an error. This prevents the writer from overwriting data that slow readers are still
 	// trying to read.
 	//
-	// Use a higher value (max 90% of buffer size) to tolerate bursty/fast writers and slower readers.
-	// Use a lower value (min 10% of buffer size) to keep subscribers closer to the head.
+	// Use a higher value (max 90% of buffer size) to absorb writer bursts and tolerate slower readers.
+	// Use a lower value to cap reader lag and drop slow readers early.
 	//
-	// If 0 is provided, the default value is set to 50% of the buffer size. If the value provided
-	// If the value provided is not between 10-90% of the buffer size, it will be automatically
-	// adjusted to ensure readers have enough time to process data before the writer overwrites it.
+	// If 0 is provided, the default value is set to 50% of the buffer size. Values above 90% of the
+	// buffer size are capped to ensure readers have enough time to process data before the writer
+	// overwrites it.
 	MaxBehind uint64
 
 	// Number of items the Iter() iterator will batch read. If 0, the default value is 64.
@@ -111,50 +100,31 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 	}
 
 	opts.MaxBehind = cmp.Or(opts.MaxBehind, rb.size/2)       // Default: 50% of buffer size
-	opts.MaxBehind = max(opts.MaxBehind, rb.size/10)         // Min: 10% of buffer size
 	opts.MaxBehind = min(opts.MaxBehind, 9*rb.size/10)       // Max: 90% of buffer size
 	opts.StartBehind = min(opts.StartBehind, opts.MaxBehind) // Max: MaxBehind
-	opts.IterReadSize = cmp.Or(opts.IterReadSize, 10)        // Default: 10
+	opts.IterReadSize = cmp.Or(opts.IterReadSize, 64)        // Default: 64 items
 
-	rb.numSubscribers.Add(1)
-
-	writePos := rb.writePos.Load()
-	var startPos uint64
-
-	// Calculate start position
-	if opts.StartBehind == 0 {
-		// Start from latest position
-		startPos = writePos
-	} else {
-		// Start from writePos - StartBehind
-		if writePos <= opts.StartBehind {
-			// Not enough data written yet or buffer overflowed - start from position 0
-			startPos = 0
-		} else {
-			// Normal case: go back StartBehind positions
-			// If StartBehind > writePos, this will underflow and wrap around correctly
-			startPos = writePos - opts.StartBehind
-		}
-	}
-
-	return &Subscriber[T]{
+	sub := &Subscriber[T]{
 		Name:         opts.Name,
 		buf:          rb,
-		pos:          startPos,
+		pos:          rb.writePos.Load() - opts.StartBehind,
 		ctx:          ctx,
 		maxLag:       opts.MaxBehind,
 		iterReadSize: opts.IterReadSize,
 	}
+
+	rb.numSubscribers.Add(1)
+	return sub
 }
 
-// Write inserts items into the ring buffer and wakes up all waiting readers to read them.
+// Write inserts items into the ring buffer and wakes up all waiting subscribers to read them.
 // This method is not concurrent safe, the caller must synchronize calls to .Write() and .Close().
 //
-// Subscribers can hang waiting for the broadcast signal to receive new data. If the writer
-// is not writing new data very frequently, it's recommended to call .Write() with zero items,
-// which will effectively flush and wake up all subscribers.
+// Subscribers can block waiting for new data. If the writer is idle, call Write() with zero items
+// to wake subscribers so they can observe context cancellation.
 //
-// It's recommended to Write max 10% of the buffer size at a time to avoid overwhelming the subscribers.
+// NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
+// MaxBehind, it will be dropped.
 func (rb *RingBuffer[T]) Write(items ...T) {
 	pos := rb.writePos.Load()
 	// TODO: Consider using copy().
@@ -163,8 +133,9 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 	}
 
 	rb.writePos.Store(pos + uint64(len(items)))
+	log.Printf("writer: write(writePos=%v)", pos+uint64(len(items)))
 
-	// Wake up all readers.
+	// Wake up all subscribers.
 	rb.cond.Broadcast()
 }
 
