@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -71,19 +70,19 @@ func TestRingBuf(t *testing.T) {
 
 	stream := ringbuf.New[*Data](bufferSize)
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	wg := sync.WaitGroup{}
 	wg.Add(numReaders)
 	for i := range numReaders {
-		ctx, cancel := context.WithCancel(context.Background())
 		sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
-			Name:      fmt.Sprintf("sub-%v", i),
-			MaxBehind: maxLag,
+			Name:   fmt.Sprintf("sub-%v", i),
+			MaxLag: maxLag,
 		})
 
 		go func() {
 			defer wg.Done()
 			sub := sub
-			cancel := cancel
 
 			var count int
 			for val := range sub.Iter() {
@@ -94,17 +93,13 @@ func TestRingBuf(t *testing.T) {
 					t.Fatalf("unexpected data: expected %v, got %v", count, val)
 				}
 				count++
-
-				if count >= numItems {
-					cancel()
-				}
 			}
 
 			if count != numItems {
 				t.Errorf("expected %v items, got %v", numItems, count)
 			}
 
-			if err := sub.Err(); !errors.Is(err, context.Canceled) {
+			if err := sub.Err(); !errors.Is(err, ringbuf.ErrClosed) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		}()
@@ -116,12 +111,18 @@ func TestRingBuf(t *testing.T) {
 			ID:   i,
 			Name: fmt.Sprintf("%v", i),
 		}
-
 		stream.Write(data)
 
 		// Simulate i/o latency.
-		time.Sleep(time.Duration(rand.Int31n(100)) * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
+	stream.Close()
+
+	go func() {
+		// If subscribers are stuck, terminate them with context cancellation.
+		time.Sleep(1 * time.Second)
+		cancel()
+	}()
 
 	wg.Wait()
 }
@@ -130,7 +131,7 @@ func TestSkip(t *testing.T) {
 	stream := ringbuf.New[*Data](100)
 
 	// Write some data
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		stream.Write(&Data{ID: i, Name: fmt.Sprintf("msg_%d", i)})
 	}
 
@@ -143,7 +144,7 @@ func TestSkip(t *testing.T) {
 	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 		Name:        "skip_test",
 		StartBehind: stream.Size() * 8 / 10,
-		MaxBehind:   stream.Size() * 8 / 10,
+		MaxLag:      stream.Size() * 8 / 10,
 	})
 
 	// Reconnect from the last processed ID.

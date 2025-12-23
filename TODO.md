@@ -1,4 +1,5 @@
 - [x] Batch writes/reads
-- [x] Test `writePos` (`uint64`) overflow thoroughly (affects MaxBehind + batch reads)
+- [x] Test `writePos` (`uint64`) overflow thoroughly (affects MaxLag + batch reads)
 - [ ] Tune the write batch loop by replacing loop with `copy()` (handle buffer overflow)
-- [x] Revisit `.Close()` functionality in regards to subscribers - do we let them finish reading data and only stop new writes?
+- [x] Finish `.Close()` semantics in regards to subscribers - do we let them finish reading data and only stop new writes?
+- [ ] Revisit `.Skip()` method. Enable "bisect" (binary search) where user would be able to tell if it's too low or too high. Or let them rewind or fwd, perhaps by returning number?

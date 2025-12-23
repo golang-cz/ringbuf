@@ -64,25 +64,25 @@ import (
 func main() {
 	stream := ringbuf.New[string](1000)
 
-	// Producer (writer)
+	// Writer (producer)
 	go func() {
-		defer stream.Close()
-
 		for i := range 10_000 {
 			stream.Write(fmt.Sprintf("event-%d", i))
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(time.Millisecond) // Simulate i/o latency.
 		}
+
+		stream.Close()
 	}()
 
-	// Consumer (subscriber)
+	// Subscriber (consumer)
 	sub := stream.Subscribe(context.TODO(), nil)
 
 	for event := range sub.Iter() {
 		fmt.Println(event)
 	}
 
-	if sub.Err() != nil {
-		log.Fatal("Subscriber fell behind:", sub.Err())
+	if err := sub.Err(); !errors.Is(err, ringbuf.ErrClosed) {
+		log.Fatal(err)
 	}
 }
 ```
@@ -155,7 +155,7 @@ Write batches to reduce wakeups (and amortize overhead):
 ```go
 // Producer: batch write.
 events := []string{"event-1", "event-2", "event-3"}
-stream.Write(events...) // variadic
+stream.Write(events...)
 ```
 
 Read in a loop into a caller-managed slice (0 allocations on the hot path):
@@ -185,7 +185,7 @@ for {
 sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 	Name:        "historical-reader",
 	StartBehind: 100, // Start reading from 100 items ago, if available
-	MaxBehind:   500, // Allow up to 500 items of lag
+	MaxLag:      500, // Allow up to 500 items of lag
 })
 ```
 
@@ -196,7 +196,7 @@ sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 	Name:        "latest-reader",
 	StartBehind: 0,   // Start from the latest position
-	MaxBehind:   100, // Allow up to 100 items of lag
+	MaxLag:      100, // Allow up to 100 items of lag
 })
 ```
 
@@ -215,7 +215,7 @@ func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], 
 	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 		Name:        "reconnect-subscriber",
 		StartBehind: stream.Size() * 3 / 4, // Start from 75% back in the buffer.
-		MaxBehind:   stream.Size() * 3 / 4, // Allow up to 75% lag.
+		MaxLag:      stream.Size() * 3 / 4, // Allow up to 75% lag.
 	})
 
 	// Skip already-processed messages.

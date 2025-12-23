@@ -9,7 +9,7 @@ import (
 
 // New creates a ring buffer for items of type T with the given buffer size.
 //
-// Pick a size large enough to absorb write bursts. A subscriber's MaxBehind is capped
+// Pick a size large enough to absorb write bursts. A subscriber's MaxLag is capped
 // at 90% of the buffer size, so a larger buffer lets slow subscribers fall further
 // behind before they are dropped.
 //
@@ -66,14 +66,14 @@ type SubscribeOpts struct {
 	// read historical data. For example, StartBehind=100 means the subscriber will start reading
 	// from 100 items ago, if available.
 	//
-	// StartBehind must be less than or equal to MaxBehind, as the historical data
-	// cannot be older than the read/write barrier defined by MaxBehind.
+	// StartBehind must be less than or equal to MaxLag, as the historical data
+	// cannot be older than the read/write barrier defined by MaxLag.
 	StartBehind uint64
 
-	// MaxBehind is the maximum number of items the subscriber can fall behind the writer.
+	// MaxLag is the maximum number of items the subscriber can fall behind the writer.
 	// It acts as a read/write barrier to prevent data corruption.
 	//
-	// If the subscriber falls more than MaxBehind items behind the writer, it will be terminated
+	// If the subscriber falls more than MaxLag items behind the writer, it will be terminated
 	// with an error. This prevents the writer from overwriting data that slow readers are still
 	// trying to read.
 	//
@@ -83,7 +83,7 @@ type SubscribeOpts struct {
 	// If 0 is provided, the default value is set to 50% of the buffer size. Values above 90% of the
 	// buffer size are capped to ensure readers have enough time to process data before the writer
 	// overwrites it.
-	MaxBehind uint64
+	MaxLag uint64
 
 	// Number of items the Iter() iterator will batch read. If 0, the default value is 64.
 	IterBatchSize uint
@@ -95,7 +95,7 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		opts = &SubscribeOpts{}
 	}
 
-	maxBehind := cmp.Or(opts.MaxBehind, rb.size/2)  // Default: 50% of buffer size
+	maxBehind := cmp.Or(opts.MaxLag, rb.size/2)     // Default: 50% of buffer size
 	maxBehind = min(maxBehind, 9*rb.size/10)        // Max: 90% of buffer size
 	startBehind := min(opts.StartBehind, maxBehind) // Max: maxBehind
 	iterBatchSize := cmp.Or(opts.IterBatchSize, 64) // Default: 64 items
@@ -127,7 +127,7 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 // to wake subscribers so they can observe context cancellation.
 //
 // NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
-// MaxBehind, it will be dropped.
+// MaxLag, it will be dropped with ErrTooSlow on the next Read() call.
 func (rb *RingBuffer[T]) Write(items ...T) {
 	pos := rb.writePos.Load()
 	// TODO: Consider using copy().
@@ -148,12 +148,13 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 
 // Close signals the end of the stream and wakes up all waiting subscribers.
 //
-// Subscribers don't fail immediately: they can drain remaining buffered data and then finish with
-// ErrClosed (effectively io.EOF). New subscriptions are still allowed after Close; they
-// never wait for new data, so they won't block.
+// Subscribers don't fail immediately: they can drain remaining buffered data
+// and then finish with ErrClosed (effectively io.EOF). New subscriptions are
+// still allowed after Close() and they will never block waiting for new data.
 //
-// Same as .Write(), this method is not concurrent safe. After calling Close(), the writer must
-// stop producing new data. Writing new data later results in undefined behavior.
+// Same as Write(), this method is not concurrent safe. After calling Close(),
+// the writer must stop producing new data. Writing new data later results in
+// undefined behavior. Calling Close() twice will result in a panic.
 func (rb *RingBuffer[T]) Close() {
 	close(rb.closed)
 	rb.cond.Broadcast()

@@ -86,7 +86,7 @@ func BenchmarkThroughput(b *testing.B) {
 
 				sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 					Name:          fmt.Sprintf("sub-%d", i),
-					MaxBehind:     *flagBufferSize * 9 / 10, // Allow readers to fall behind, but fail fast if they can't keep up.
+					MaxLag:        *flagBufferSize * 9 / 10, // Allow readers to fall behind, but fail fast if they can't keep up.
 					IterBatchSize: uint(*flagReadBatch),
 				})
 
