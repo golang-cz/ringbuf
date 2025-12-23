@@ -30,9 +30,6 @@ func New[T any](size uint64) *RingBuffer[T] {
 // reading its data at their own pace. Write operations are not thread-safe and must
 // be synchronized by the caller.
 type RingBuffer[T any] struct {
-	// Number of active subscribers. Used for metrics and debugging.
-	numSubscribers atomic.Int64
-
 	// Circular buffer storing the data items.
 	buf []T
 
@@ -47,11 +44,15 @@ type RingBuffer[T any] struct {
 	// compromise to maximize the write throughput.
 	writePos atomic.Uint64
 
+	// Number of active subscribers. Used for metrics and debugging.
+	// Note: A signed integer, so we can decrement the counter by .Add(-1).
+	numSubscribers atomic.Int64
+
 	// Channel indicating for subscribers that the ring buffer has been closed and no new
 	// data will be available for reading.
 	closed chan struct{}
 
-	// Synchronization primitives for waking up waiting subscribers.
+	// Synchronization primitives for waking up subscribers waiting for new data.
 	mu   sync.Mutex
 	cond *sync.Cond
 }
@@ -99,7 +100,7 @@ type SubscribeOpts struct {
 	// adjusted to ensure readers have enough time to process data before the writer overwrites it.
 	MaxBehind uint64
 
-	// Number of items the Iter() iterator will batch read. If 0, the default value is 10.
+	// Number of items the Iter() iterator will batch read. If 0, the default value is 64.
 	IterReadSize uint
 }
 
@@ -155,10 +156,10 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 //
 // It's recommended to Write max 10% of the buffer size at a time to avoid overwhelming the subscribers.
 func (rb *RingBuffer[T]) Write(items ...T) {
-	// Write items to the buffer.
 	pos := rb.writePos.Load()
-	for _, item := range items {
-		rb.buf[pos%rb.size] = item
+	// TODO: Consider using copy().
+	for i, item := range items {
+		rb.buf[(pos+uint64(i))%rb.size] = item
 	}
 
 	rb.writePos.Store(pos + uint64(len(items)))
@@ -167,10 +168,14 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 	rb.cond.Broadcast()
 }
 
-// Close closes the ring buffer and wakes up all waiting subscribers to finish reading.
+// Close signals the end of the stream and wakes up all waiting subscribers.
 //
-// Note: This method is not concurrent safe and must be called by the writer, which
-// should also stop producing new data. Writing data after .Close() is undefined behavior.
+// Subscribers don't fail immediately: they can drain remaining buffered data and then finish with
+// ErrWriterFinished (effectively io.EOF). New subscriptions are still allowed after Close; they
+// never wait for new data, so they won't block.
+//
+// Same as .Write(), this method is not concurrent safe. After calling Close, the writer must stop
+// producing new data. Writing new data later results in undefined behavior.
 func (rb *RingBuffer[T]) Close() {
 	close(rb.closed)
 	rb.cond.Broadcast()

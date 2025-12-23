@@ -1,4 +1,4 @@
 - [x] Batch writes/reads
-- [ ] Test `writePos` (`uint64`) overflow thoroughly (affects MaxBehind + batch reads)
+- [x] Test `writePos` (`uint64`) overflow thoroughly (affects MaxBehind + batch reads)
 - [ ] Tune the write batch loop by replacing loop with `copy()` (handle buffer overflow)
-- [ ] Revisit `.Close()` functionality in regards to subscribers - do we let them finish reading data and only stop new writes?
+- [x] Revisit `.Close()` functionality in regards to subscribers - do we let them finish reading data and only stop new writes?
