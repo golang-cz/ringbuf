@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	ErrSubscriberTooSlow = fmt.Errorf("ringbuf: subscriber is too slow: %w", io.ErrUnexpectedEOF)
-	ErrWriterFinished    = fmt.Errorf("ringbuf: writer finished producing new data: %w", io.EOF)
+	ErrTooSlow = fmt.Errorf("ringbuf: subscriber too slow: %w", io.ErrUnexpectedEOF)
+	ErrClosed  = fmt.Errorf("ringbuf: closed (end of stream): %w", io.EOF)
 )
 
 // Subscriber is an independent ring buffer reader maintaining its own position.
@@ -36,10 +36,10 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		writePos = ringBuf.writePos.Load()
 
 		// Return error if the reader is too far behind.
-		diff := writePos - pos
-		if diff > s.maxLag {
+		lag := writePos - pos
+		if lag > s.maxLag {
 			s.ringBuf.numSubscribers.Add(-1)
-			return 0, fmt.Errorf("ringbuf: subscriber[%v] fell behind (pos=%v, writePos=%v, lag=%v, size=%v, %0.f%% out of max %0.f%%): %w", s.Name, pos, writePos, diff, ringBuf.size, 100*(float64(diff)/float64(ringBuf.size)), 100*(float64(s.maxLag)/float64(ringBuf.size)), ErrSubscriberTooSlow)
+			return 0, fmt.Errorf("subscriber[%v] fell behind (lag=%v, maxLag=%v): %w", s.Name, lag, s.maxLag, ErrTooSlow)
 		}
 
 		// Lock-free hot path.
@@ -54,7 +54,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 			return 0, s.ctx.Err()
 		case <-ringBuf.closed:
 			s.ringBuf.numSubscribers.Add(-1)
-			return 0, ErrWriterFinished
+			return 0, ErrClosed
 		default:
 		}
 
@@ -70,7 +70,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		select {
 		case <-ringBuf.closed:
 			s.ringBuf.numSubscribers.Add(-1)
-			return 0, ErrWriterFinished
+			return 0, ErrClosed
 		default:
 		}
 
@@ -154,9 +154,9 @@ func (s *Subscriber[T]) Iter() iter.Seq[T] {
 // Err returns the terminal error that stopped iteration, if any.
 // It must be called after .Iter() completes.
 // Common errors:
-// - ErrRingBufferClosed/io.UnexpectedEOF - ring buffer was closed
-// - ErrSubscriberTooSlow/io.EOF          - subscriber fell too far behind
-// - context.Canceled/DeadlineExceeded    - subscriber context was cancelled or timed out
+// - ErrClosed/io.EOF                  - ring buffer was closed (end of stream)
+// - ErrTooSlow/io.ErrUnexpectedEOF    - subscriber fell too far behind
+// - context.Canceled/DeadlineExceeded - subscriber context was canceled or timed out
 // Returns nil if no error occurred.
 func (s *Subscriber[T]) Err() error {
 	return s.iterErr

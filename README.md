@@ -168,7 +168,7 @@ events := make([]string, 100)
 for {
 	n, err := sub.Read(events)
 	if err != nil {
-		// err is typically ringbuf.ErrRingBufferClosed, ringbuf.ErrSubscriberTooSlow, or ctx error.
+		// err is typically ringbuf.ErrClosed, ringbuf.ErrTooSlow, or ctx error.
 		break
 	}
 

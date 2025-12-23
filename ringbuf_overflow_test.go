@@ -50,7 +50,7 @@ func TestWritePosOverflow(t *testing.T) {
 				t.Logf("%v:   Reading %+v", sub.Name, val)
 				read++
 			}
-			if err := sub.Err(); !errors.Is(err, ErrWriterFinished) {
+			if err := sub.Err(); !errors.Is(err, ErrClosed) {
 				t.Errorf("%v: %v", sub.Name, err)
 			}
 
@@ -74,7 +74,7 @@ func TestWritePosOverflow(t *testing.T) {
 			t.Logf("%v:   Reading %+v", sub4.Name, val)
 			read++
 		}
-		if err := sub4.Err(); !errors.Is(err, ErrWriterFinished) {
+		if err := sub4.Err(); !errors.Is(err, ErrClosed) {
 			t.Errorf("%v: %v", sub4.Name, err)
 		}
 

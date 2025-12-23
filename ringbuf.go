@@ -149,7 +149,7 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 // Close signals the end of the stream and wakes up all waiting subscribers.
 //
 // Subscribers don't fail immediately: they can drain remaining buffered data and then finish with
-// ErrWriterFinished (effectively io.EOF). New subscriptions are still allowed after Close; they
+// ErrClosed (effectively io.EOF). New subscriptions are still allowed after Close; they
 // never wait for new data, so they won't block.
 //
 // Same as .Write(), this method is not concurrent safe. After calling Close(), the writer must

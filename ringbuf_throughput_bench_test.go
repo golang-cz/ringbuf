@@ -101,10 +101,10 @@ func BenchmarkThroughput(b *testing.B) {
 						n, err := sub.Read(items)
 						if err != nil {
 							// Expected shutdown conditions.
-							if errors.Is(err, ringbuf.ErrWriterFinished) || errors.Is(err, context.Canceled) {
+							if errors.Is(err, ringbuf.ErrClosed) || errors.Is(err, context.Canceled) {
 								return
 							}
-							recordErr(err) // incl. ErrSubscriberTooSlow
+							recordErr(err) // incl. ErrTooSlow
 							return
 						}
 						deliveredReads.Add(uint64(n))
