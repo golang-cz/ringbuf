@@ -129,7 +129,8 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 // to wake subscribers so they can observe context cancellation.
 //
 // NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
-// MaxLag, it will be dropped with ErrTooSlow on the next Read() call.
+// MaxLag, it will be dropped with ErrTooSlow on the next Read() call. Keep the batch reasonable
+// small, e.g. less than MaxLag and less than 50% of the buffer size to avoid subscriber errors.
 func (rb *RingBuffer[T]) Write(items ...T) {
 	pos := rb.writePos.Load()
 	for i, item := range items {
