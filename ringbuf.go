@@ -15,9 +15,11 @@ import (
 //
 // The minimal size is 100; smaller values are rounded up to 100.
 func New[T any](size uint64) *RingBuffer[T] {
+	size = max(size, 100)
+
 	rb := &RingBuffer[T]{
 		buf:    make([]T, size),
-		size:   max(size, 100),
+		size:   size,
 		closed: make(chan struct{}),
 	}
 	rb.cond = sync.NewCond(&rb.mu)
