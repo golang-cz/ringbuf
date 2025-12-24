@@ -66,11 +66,12 @@ func TestRingBuf(t *testing.T) {
 	bufferSize := uint64(2_000)
 	numItems := 10_000
 	numReaders := 2_000
-	maxLag := bufferSize * (3 / 4)
+	maxLag := bufferSize * 3 / 4
 
 	stream := ringbuf.New[*Data](bufferSize)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	wg := sync.WaitGroup{}
 	wg.Add(numReaders)
@@ -87,10 +88,14 @@ func TestRingBuf(t *testing.T) {
 			var count int
 			for val := range sub.Iter() {
 				if val.ID != count {
-					t.Fatalf("unexpected data: expected %v, got %v", count, val)
+					t.Errorf("unexpected data: expected %v, got %v", count, val)
+					cancel()
+					return
 				}
 				if val.Name != fmt.Sprintf("%v", count) {
-					t.Fatalf("unexpected data: expected %v, got %v", count, val)
+					t.Errorf("unexpected data: expected %v, got %v", count, val)
+					cancel()
+					return
 				}
 				count++
 			}
@@ -100,7 +105,9 @@ func TestRingBuf(t *testing.T) {
 			}
 
 			if err := sub.Err(); !errors.Is(err, ringbuf.ErrClosed) {
-				t.Fatalf("unexpected error: %v", err)
+				t.Errorf("unexpected error: %v", err)
+				cancel()
+				return
 			}
 		}()
 	}
@@ -127,7 +134,7 @@ func TestRingBuf(t *testing.T) {
 	wg.Wait()
 }
 
-func TestSkip(t *testing.T) {
+func TestSeek(t *testing.T) {
 	stream := ringbuf.New[*Data](100)
 
 	// Write some data
@@ -147,9 +154,10 @@ func TestSkip(t *testing.T) {
 		MaxLag:      stream.Size() * 8 / 10,
 	})
 
-	// Reconnect from the last processed ID.
-	found := sub.Skip(func(item *Data) bool {
-		return item.ID <= lastProcessedID
+	// Reconnect from the last processed ID (bisect by ID).
+	targetID := lastProcessedID + 1
+	found := sub.Seek(func(item *Data) int {
+		return item.ID - targetID
 	})
 	if !found {
 		t.Fatalf("expected to find message with ID %v", lastProcessedID)
@@ -168,5 +176,124 @@ func TestSkip(t *testing.T) {
 
 	if items[0].ID != lastProcessedID+1 {
 		t.Fatalf("expected ID %v, got %d", lastProcessedID+1, items[0].ID)
+	}
+}
+
+func TestSeekFastForward(t *testing.T) {
+	stream := ringbuf.New[*Data](100)
+
+	// Write some data
+	for i := range 50 {
+		stream.Write(&Data{ID: i, Name: fmt.Sprintf("msg_%d", i)})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	targetID := 31
+
+	// Subscribe far behind the writer so the buffered window contains the target.
+	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+		Name:        "seek_ff",
+		StartBehind: stream.Size() * 8 / 10,
+		MaxLag:      stream.Size() * 8 / 10,
+	})
+
+	found := sub.Seek(func(item *Data) int {
+		return item.ID - targetID
+	})
+	if !found {
+		t.Fatalf("expected to find message with ID >= %v", targetID)
+	}
+
+	items := make([]*Data, 1)
+	n, err := sub.Read(items)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("unexpected n: %v", n)
+	}
+	if items[0].ID != targetID {
+		t.Fatalf("expected ID %v, got %d", targetID, items[0].ID)
+	}
+}
+
+func TestSeekRewind(t *testing.T) {
+	stream := ringbuf.New[*Data](100)
+
+	// Write some data
+	for i := range 50 {
+		stream.Write(&Data{ID: i, Name: fmt.Sprintf("msg_%d", i)})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start at the head (future-only), then seek backwards within the buffered window.
+	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+		Name:   "seek_rewind",
+		MaxLag: stream.Size() / 2, // default, but make it explicit
+	})
+
+	targetID := 10
+	found := sub.Seek(func(item *Data) int {
+		return item.ID - targetID
+	})
+	if !found {
+		t.Fatalf("expected to find message with ID >= %v", targetID)
+	}
+
+	items := make([]*Data, 1)
+	n, err := sub.Read(items)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("unexpected n: %v", n)
+	}
+	if items[0].ID != targetID {
+		t.Fatalf("expected ID %v, got %d", targetID, items[0].ID)
+	}
+}
+
+func TestSeekNotFoundMovesToTail(t *testing.T) {
+	stream := ringbuf.New[*Data](100)
+
+	// Write some data
+	for i := range 50 {
+		stream.Write(&Data{ID: i, Name: fmt.Sprintf("msg_%d", i)})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+		Name:        "seek_not_found",
+		StartBehind: stream.Size() * 8 / 10,
+		MaxLag:      stream.Size() * 8 / 10,
+	})
+
+	targetID := 10_000
+	found := sub.Seek(func(item *Data) int {
+		return item.ID - targetID
+	})
+	if found {
+		t.Fatalf("expected not to find message with ID >= %v", targetID)
+	}
+
+	// After not-found, subscriber should be at the tail (writePos) and receive only future writes.
+	stream.Write(&Data{ID: 50, Name: "msg_50"})
+
+	items := make([]*Data, 1)
+	n, err := sub.Read(items)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("unexpected n: %v", n)
+	}
+	if items[0].ID != 50 {
+		t.Fatalf("expected ID %v, got %d", 50, items[0].ID)
 	}
 }

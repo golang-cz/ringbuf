@@ -202,7 +202,8 @@ sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 
 ### Reconnection Logic
 
-The `Skip()` method allows subscribers to fast-forward to a specific position using only lock-free operations.
+The `Seek()` method allows subscribers to fast-forward to a specific position efficiently without locking
+(it uses atomic loads of the writer cursor and reads already-written items from the buffer).
 
 ```go
 type Message struct {
@@ -218,9 +219,17 @@ func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], 
 		MaxLag:      stream.Size() * 3 / 4, // Allow up to 75% lag.
 	})
 
-	// Skip already-processed messages.
-	found := sub.Skip(func(msg Message) bool {
-		return msg.ID <= lastMsgID
+	// Seek to the first unprocessed message.
+	targetID := lastMsgID + 1
+	found := sub.Seek(func(msg Message) int {
+		switch {
+		case msg.ID < targetID:
+			return -1 // too low
+		case msg.ID > targetID:
+			return 1 // too high
+		default:
+			return 0
+		}
 	})
 	if !found {
 		fmt.Printf("Failed to resume by last message ID %d", lastMsgID)

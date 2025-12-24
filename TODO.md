@@ -1,5 +1,5 @@
 - [x] Batch writes/reads
-- [x] Test `writePos` cursor overflows thoroughly. Affects historical and batch reads during very long streams after math.MaxUint64 items were written.
+- [x] Test `writePos` cursor overflows thoroughly. Affects historical and batch reads during very long streams after `math.MaxUint64` items were written.
    - [x] Handle write overflow
    - [x] Handle read overflow
 - [x] Finish `.Close()` semantics in regards to subscribers - do we let them finish reading data and only stop new writes?
@@ -50,4 +50,4 @@
                 // Found first item that should not be skipped, stop here.
                 return true
     ```
-- [ ] Revisit `.Skip()` method. Enable "bisect" (binary search) where user would be able to tell if it's too low or too high. Or let them rewind or fwd, perhaps by returning number?
+- [x] Revisit `Skip()` method. Instead of walking the available items sequentially, enable "bisect" mode (binary search) where user would be able to tell if their messageID is too low or too high. Let them rewind or forward, perhaps by returning a number? Aim for O(log N) complexity. Call it `Seek()`?

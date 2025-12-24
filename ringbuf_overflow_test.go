@@ -115,3 +115,54 @@ func dataGenerator(startAt int) (next func(int) []*Data, written func() uint64) 
 	}
 	return next, written
 }
+
+func TestSeekWritePosOverflow(t *testing.T) {
+	stream := New[*Data](100)
+
+	// Start near MaxUint64 to exercise overflow behavior.
+	startBeforeOverflow := 4
+	stream.writePos.Store(math.MaxUint64 - uint64(startBeforeOverflow))
+
+	// Write enough items to overflow writePos.
+	getItems, _ := dataGenerator(-startBeforeOverflow)
+	written := int64(10)
+	stream.Write(getItems(int(written))...)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Subscribe so the buffered window includes exactly the items we wrote.
+	sub := stream.Subscribe(ctx, &SubscribeOpts{
+		Name:          "seek_overflow",
+		StartBehind:   uint64(written),
+		MaxLag:        uint64(written),
+		IterBatchSize: 1,
+	})
+
+	targetID := int64(0)
+	found := sub.Seek(func(item *Data) int {
+		switch {
+		case item.ID < targetID:
+			return -1
+		case item.ID > targetID:
+			return 1
+		default:
+			return 0
+		}
+	})
+	if !found {
+		t.Fatalf("expected to find ID >= %v", targetID)
+	}
+
+	items := make([]*Data, 1)
+	n, err := sub.Read(items)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("unexpected n: %v", n)
+	}
+	if items[0].ID != targetID {
+		t.Fatalf("expected ID %v, got %v", targetID, items[0].ID)
+	}
+}

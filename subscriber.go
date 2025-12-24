@@ -105,31 +105,67 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) in
 	return n
 }
 
-// Skip fast-forwards through available items using only lock-free operations.
+// Seek positions the subscriber using a binary search ("bisect") over the currently buffered window.
 //
-// This is useful for subscription reconnection logic where the subscriber needs to continue
-// where it left off (e.g. after the last processed event/message ID). The skipCondition should
-// return true for items that should be skipped. The method stops at the first item where
-// the skipCondition returns false (i.e., the first item to continue reading from).
+// It is implemented without locking: it only does atomic loads of the writer cursor (and epoch)
+// and then reads already-written items from the buffer.
 //
-// Returns true if the subscriber was positioned at a new item.
-// Returns false if no such item was found - reconnection failed, subscriber will only get new data.
-func (s *Subscriber[T]) Skip(skipCondition func(T) bool) bool {
-	ringBuf := s.ringBuf
-	writePos := ringBuf.writePos.Load()
+// It searches within the safe readable range [writePos-maxLag, writePos) (clamped to 0 before the
+// first writePos overflow) and sets s.pos to the first item where cmp(item) >= 0.
+//
+// The cmp function must be monotonic with the write order over the searched window:
+//   - return < 0 if the current item is "too low"  (seek forward)
+//   - return = 0 if the current item is acceptable (stop)
+//   - return > 0 if the current item is "too high" (seek backward)
+//
+// Typical usage is to seek by a monotonically increasing key (message ID, timestamp, offset):
+//
+//	// Position to the first message with ID >= targetID.
+//	found := sub.Seek(func(m Message) int { return int(m.ID - targetID) })
+//
+// If no item in the buffered window satisfies cmp(item) >= 0, Seek positions the subscriber at the
+// current writePos (so it will only receive future items) and returns false.
+//
+// Note: If cmp is not monotonic (or the stream is not ordered by the key), the result is undefined.
+func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
+	rb := s.ringBuf
+	writePos := rb.writePos.Load()
 
-	// Only process items that are already written (lock-free hot path).
-	for s.pos < writePos {
-		item := ringBuf.buf[s.pos%ringBuf.size]
-		if !skipCondition(item) {
-			// Found first item that should not be skipped, stop here.
-			return true
-		}
-		s.pos++
+	// Compute the earliest safe readable position for this subscriber.
+	// We must handle uint64 wrap-around: we search by offsets (distance) rather than raw positions.
+	minPos := writePos - s.maxLag
+	if writePos < s.maxLag && rb.writeEpoch.Load() == 0 {
+		// Before the first writePos overflow, positions < 0 never existed.
+		minPos = 0
 	}
 
-	// No items available or all items were skipped
-	return false
+	window := writePos - minPos // number of items in [minPos, writePos)
+	if window == 0 {
+		s.pos = writePos
+		return false
+	}
+
+	// Lower-bound search for first position with cmp(item) >= 0.
+	lo, hi := uint64(0), window
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		pos := minPos + mid
+		item := rb.buf[pos%rb.size]
+		if cmp(item) < 0 {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+
+	if lo == window {
+		// Not found: move to tail (future-only).
+		s.pos = writePos
+		return false
+	}
+
+	s.pos = minPos + lo
+	return true
 }
 
 // Iter() returns iterator for consuming items from the ring buffer.
