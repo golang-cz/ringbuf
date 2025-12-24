@@ -105,7 +105,7 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) in
 	return n
 }
 
-// Seek positions the subscriber using a binary search ("bisect") over the currently buffered window.
+// Seek positions the subscriber using a lower-bound binary search ("bisect") over the currently buffered window.
 //
 // It is implemented without locking: it only does atomic loads of the writer cursor (and epoch)
 // and then reads already-written items from the buffer.
@@ -118,16 +118,27 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) in
 //   - return = 0 if the current item is acceptable (stop)
 //   - return > 0 if the current item is "too high" (seek backward)
 //
+// Hinting:
+// The magnitude of the returned value may be used as a one-shot hint in *items*.
+// If cmp returns a value that approximates "how many items away" the target is from the current probe,
+// Seek will try to jump the next probe by that amount once (probe = probe - cmp(item)), and then it
+// continues with classic bisection.
+//
+// The hint is always clamped to the current binary-search bounds, and Seek always maintains classic
+// [lo, hi) bisection bounds, so correctness depends only on the sign being monotonic. When the hint is
+// not helpful (e.g. sparse IDs, duplicates), Seek naturally falls back to classic bisection. Worst-case
+// complexity remains O(log N) comparisons.
+//
 // Typical usage is to seek by a monotonically increasing key (message ID, timestamp, offset):
 //
 //	// Position to the first message with ID >= targetID.
-//	found := sub.Seek(func(m Message) int { return int(m.ID - targetID) })
+//	found := sub.Seek(func(m Message) int64 { return m.ID - targetID })
 //
 // If no item in the buffered window satisfies cmp(item) >= 0, Seek positions the subscriber at the
 // current writePos (so it will only receive future items) and returns false.
 //
 // Note: If cmp is not monotonic (or the stream is not ordered by the key), the result is undefined.
-func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
+func (s *Subscriber[T]) Seek(cmp func(T) int64) bool {
 	rb := s.ringBuf
 	writePos := rb.writePos.Load()
 
@@ -146,16 +157,44 @@ func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
 	}
 
 	// Lower-bound search for first position with cmp(item) >= 0.
+	// We keep classic [lo, hi) bounds, but we may use cmp magnitude as a one-shot hint for the next probe.
 	lo, hi := uint64(0), window
+	var (
+		prevProbe uint64
+		prevCmp   int64
+		havePrev  bool
+		useHint   = true
+	)
 	for lo < hi {
-		mid := lo + (hi-lo)/2
-		pos := minPos + mid
-		item := rb.buf[pos%rb.size]
-		if cmp(item) < 0 {
-			lo = mid + 1
-		} else {
-			hi = mid
+		probe := lo + (hi-lo)/2 // classic bisection probe
+		if havePrev && useHint && hi > lo {
+			// Hint probe: probe = prevProbe - prevCmp (moves "towards target" if prevCmp is a true distance in items).
+			cand := int64(prevProbe) - prevCmp
+			if cand < int64(lo) {
+				cand = int64(lo)
+			}
+			// Keep probe within [lo, hi).
+			if cand >= int64(hi) {
+				cand = int64(hi - 1)
+			}
+			if uint64(cand) != prevProbe {
+				probe = uint64(cand)
+			}
+			useHint = false
 		}
+
+		pos := minPos + probe
+		item := rb.buf[pos%rb.size]
+		v := cmp(item)
+		if v < 0 {
+			lo = probe + 1
+		} else {
+			hi = probe
+		}
+
+		prevProbe = probe
+		prevCmp = v
+		havePrev = true
 	}
 
 	if lo == window {

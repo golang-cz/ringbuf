@@ -221,7 +221,7 @@ func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], 
 
 	// Seek to the first unprocessed message.
 	targetID := lastMsgID + 1
-	found := sub.Seek(func(msg Message) int {
+	found := sub.Seek(func(msg Message) int64 {
 		switch {
 		case msg.ID < targetID:
 			return -1 // too low

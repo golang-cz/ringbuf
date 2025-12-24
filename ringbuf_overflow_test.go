@@ -140,7 +140,7 @@ func TestSeekWritePosOverflow(t *testing.T) {
 	})
 
 	targetID := int64(0)
-	found := sub.Seek(func(item *Data) int {
+	found := sub.Seek(func(item *Data) int64 {
 		switch {
 		case item.ID < targetID:
 			return -1
