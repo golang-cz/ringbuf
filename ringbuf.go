@@ -132,7 +132,6 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 // MaxLag, it will be dropped with ErrTooSlow on the next Read() call.
 func (rb *RingBuffer[T]) Write(items ...T) {
 	pos := rb.writePos.Load()
-	// TODO: Consider using copy().
 	for i, item := range items {
 		rb.buf[(pos+uint64(i))%rb.size] = item
 	}
