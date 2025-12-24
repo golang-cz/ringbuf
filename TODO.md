@@ -1,5 +1,7 @@
 - [x] Batch writes/reads
-- [x] Test `writePos` (`uint64`) overflows thoroughly (affects MaxLag + historical reads and batch reads)
+- [x] Test `writePos` cursor overflows thoroughly. Affects historical and batch reads during very long streams after math.MaxUint64 items were written.
+   - [x] Handle write overflow
+   - [x] Handle read overflow
 - [x] Finish `.Close()` semantics in regards to subscribers - do we let them finish reading data and only stop new writes?
 - [x] Try to tune the write batch write loop by replacing for range with `copy()` (but still handle buffer overflow)
       - Result: No effect on the benchmarks at 100 write/read batch size. It likely slowed down single writes. And it changed the semantics of large write batches (items longer than bufsize).

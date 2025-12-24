@@ -44,7 +44,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 
 		// Lock-free hot path.
 		if pos != writePos {
-			return s.readAvailable(pos, writePos, items)
+			return s.readAvailable(pos, writePos, items), nil
 		}
 
 		// Check for end of stream.
@@ -64,7 +64,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		writePos = ringBuf.writePos.Load()
 		if pos != writePos {
 			ringBuf.mu.Unlock()
-			return s.readAvailable(pos, writePos, items)
+			return s.readAvailable(pos, writePos, items), nil
 		}
 
 		select {
@@ -82,19 +82,27 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 
 // readAvailable copies available items from the ring buffer into the provided slice.
 // It updates the subscriber's position and returns the number of items copied.
-func (s *Subscriber[T]) readAvailable(pos, writePos uint64, items []T) (int, error) {
+func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) int {
 	ringBuf := s.ringBuf
-	start := pos % ringBuf.size
-	end := writePos % ringBuf.size
-	if end <= start {
-		end = start + 1 // TODO: Handle buffer overflow better. Can we read until the end of the buffer?
+	maxRead := min(uint64(len(items)), writePos-pos)
+	if maxRead == 0 {
+		return 0
 	}
-	availableItems := ringBuf.buf[start:end]
 
-	n := copy(items, availableItems)
+	start := pos % ringBuf.size
+	end := start + maxRead
+
+	var n int
+	if end <= ringBuf.size {
+		n = copy(items, ringBuf.buf[start:end])
+	} else {
+		// Buffer overflow: read until end and then from the beginning.
+		n = copy(items, ringBuf.buf[start:])
+		n += copy(items[n:], ringBuf.buf[:end-ringBuf.size])
+	}
 	s.pos += uint64(n)
 
-	return n, nil
+	return n
 }
 
 // Skip fast-forwards through available items using only lock-free operations.
