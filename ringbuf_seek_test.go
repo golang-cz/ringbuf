@@ -231,7 +231,7 @@ func TestSeek_LargeDataset_ProbeCounts(t *testing.T) {
 	targets := []int{-1, 0, 1, 2, 10, 123, n / 2, n - 2, n - 1, n, n + 1, 10_000_000}
 
 	// Bound comparator calls: sort.Search costs ceil(log2(n)) == bits.Len(n-1) comparisons,
-	// plus one final equality check at lb.
+	// plus one final equality check at lowerBound.
 	maxComparisons := bits.Len(uint(n-1)) + 1
 
 	var (
@@ -306,7 +306,7 @@ func TestSeek_NonMonotonicInput_Terminates(t *testing.T) {
 	targets := []int{-1, 0, 3, 6, 10, 11, 12, 13, 10_000}
 
 	// Bound comparator calls: sort.Search costs ceil(log2(n)) == bits.Len(n-1) comparisons,
-	// plus one final equality check at lb.
+	// plus one final equality check at lowerBound.
 	maxComparisons := bits.Len(uint(len(ids)-1)) + 1
 
 	for _, target := range targets {
@@ -348,7 +348,7 @@ func TestSeek_NonMonotonicComparator_Terminates(t *testing.T) {
 	}
 
 	// Bound comparator calls: sort.Search costs ceil(log2(n)) == bits.Len(n-1) comparisons,
-	// plus one final equality check at lb.
+	// plus one final equality check at lowerBound.
 	maxComparisons := bits.Len(uint(len(ids)-1)) + 1
 	rng := rand.New(rand.NewSource(1))
 

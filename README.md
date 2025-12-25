@@ -221,7 +221,6 @@ func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], 
 
 	// Seek to the last processed message and resume right after it.
 	found := sub.SeekAfter(func(msg Message) int {
-		// import "cmp"
 		return cmp.Compare(msg.ID, lastMsgID)
 	})
 	if !found {

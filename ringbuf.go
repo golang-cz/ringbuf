@@ -105,7 +105,7 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 	writePos := rb.writePos.Load()
 	startPos := writePos - startBehind
 	if startPos > writePos && rb.writeEpoch.Load() == 0 {
-		// Underflow: No historical data available, start from the beginning of the buffer.
+		// Before the first writePos overflow, positions < 0 never existed.
 		startPos = 0
 	}
 

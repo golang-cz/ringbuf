@@ -130,29 +130,32 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) in
 //
 // Worst-case time complexity is O(log N) comparisons.
 //
-// Basic example (seek to an exact message ID):
+// Basic example (read from an exact message ID):
 //
+//	startAt := 123
 //	found := sub.Seek(func(msg *Message) int {
-//		return cmp.Compare(msg.ID, 123)
+//		return cmp.Compare(msg.ID, startAt)
 //	})
 //	if !found {
 //		return
 //	}
 //	// Next Read() returns the matched message (ID==targetID).
 func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
-	found, matchPos := s.seek(cmp)
+	found, matchPos, tailPos := s.seek(cmp)
 	if !found {
+		s.pos = tailPos
 		return false
 	}
+
 	s.pos = matchPos
 	return true
 }
 
-// SeekAfter is like Seek, but positions the subscriber AFTER the matched item.
+// SeekAfter is like Seek, but positions the subscriber after the matched item.
 //
 // It returns true only if it finds an item for which cmp(item) == 0 (an exact match) in the
 // current buffer window. If found, it positions the subscriber to read the item immediately
-// AFTER the matched one (i.e. the next Read() returns the following item, or it tails if the
+// after the matched one (i.e. the next Read() returns the following item, or it tails if the
 // match was the last buffered item).
 //
 // If no exact match exists in the current window, SeekAfter positions the subscriber at the
@@ -162,7 +165,7 @@ func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
 //
 // Basic example (reconnect after the last processed message ID):
 //
-//	lastProcessedID := int64(123)
+//	lastProcessedID := 123
 //	found := sub.SeekAfter(func(msg *Message) int {
 //		return cmp.Compare(msg.ID, lastProcessedID)
 //	})
@@ -171,56 +174,45 @@ func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
 //	}
 //	// Next Read() returns the first message after lastProcessedID.
 func (s *Subscriber[T]) SeekAfter(cmp func(T) int) bool {
-	found, matchPos := s.seek(cmp)
+	found, matchPos, tailPos := s.seek(cmp)
 	if !found {
+		s.pos = tailPos
 		return false
 	}
 
-	// Advance by one; if the match was the last buffered item, this equals writePos (tail).
 	s.pos = matchPos + 1
 	return true
 }
 
 // seek finds an exact match within the current buffer window.
-// On success it returns (true, matchPos) where matchPos is the absolute ring-buffer position.
-// On failure it seeks to tail and returns (false, 0).
-func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64) {
+// On success it returns (true, matchPos, tailPos) where matchPos is the absolute ring-buffer
+// position and tailPos is the writePos snapshot used for this search.
+// On failure it returns (false, 0, tailPos).
+func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64, uint64) {
 	rb := s.ringBuf
 	writePos := rb.writePos.Load()
 
-	minPos := writePos - s.maxLag
-	if writePos < s.maxLag && rb.writeEpoch.Load() == 0 {
-		minPos = 0
+	window := min(s.maxLag, uint64(math.MaxInt)) // sort.Search is limited on 32-bit CPUs
+	if writePos < window && rb.writeEpoch.Load() == 0 {
+		// Before the first writePos overflow, positions < 0 never existed.
+		window = writePos
 	}
+	minPos := writePos - window
 
-	window := writePos - minPos
-	if window == 0 {
-		s.pos = writePos
-		return false, 0
-	}
-
-	// sort.Search indexes with int; if the window doesn't fit into int (on 32-bit CPU),
-	// cap it to the most recent MaxInt items so we can still search something meaningful.
-	maxN := uint64(math.MaxInt)
-	window = min(window, maxN)
-	minPos = writePos - window
-	n := int(window)
-
-	lb := sort.Search(n, func(i int) bool {
+	// lower-bound: the first "match candidate" (we still need to confirm exact match)
+	lb := sort.Search(int(window), func(i int) bool {
 		pos := minPos + uint64(i)
 		return cmp(rb.buf[pos%rb.size]) >= 0
 	})
-	if lb == n {
-		s.pos = writePos
-		return false, 0
+	if lb == int(window) {
+		return false, 0, writePos
 	}
 
 	pos := minPos + uint64(lb)
 	if cmp(rb.buf[pos%rb.size]) != 0 {
-		s.pos = writePos
-		return false, 0
+		return false, 0, writePos
 	}
-	return true, pos
+	return true, pos, writePos
 }
 
 // Iter() returns iterator for consuming items from the ring buffer.
