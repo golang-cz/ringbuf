@@ -68,7 +68,7 @@ func main() {
 	go func() {
 		for i := range 10_000 {
 			stream.Write(fmt.Sprintf("event-%d", i))
-			time.Sleep(time.Millisecond) // Simulate i/o latency.
+			time.Sleep(100 * time.Microsecond) // Simulate i/o latency.
 		}
 
 		stream.Close()
@@ -219,20 +219,13 @@ func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], 
 		MaxLag:      stream.Size() * 3 / 4, // Allow up to 75% lag.
 	})
 
-	// Seek to the first unprocessed message.
-	targetID := lastMsgID + 1
-	found := sub.Seek(func(msg Message) int64 {
-		switch {
-		case msg.ID < targetID:
-			return -1 // too low
-		case msg.ID > targetID:
-			return 1 // too high
-		default:
-			return 0
-		}
+	// Seek to the last processed message and resume right after it.
+	found := sub.SeekAfter(func(msg Message) int {
+		// import "cmp"
+		return cmp.Compare(msg.ID, lastMsgID)
 	})
 	if !found {
-		fmt.Printf("Failed to resume by last message ID %d", lastMsgID)
+		fmt.Printf("Failed to resume by last message ID %d (not in buffer)", lastMsgID)
 		return
 	}
 

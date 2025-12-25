@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
+	"sort"
 )
 
 var (
@@ -69,6 +71,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 
 		select {
 		case <-ringBuf.closed:
+			ringBuf.mu.Unlock()
 			s.ringBuf.numSubscribers.Add(-1)
 			return 0, ErrClosed
 		default:
@@ -105,106 +108,119 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) in
 	return n
 }
 
-// Seek positions the subscriber using a lower-bound binary search ("bisect") over the currently buffered window.
+// Seek positions the subscriber using a lock-free binary search within the current buffer
+// window (up to MaxLag behind the writer).
 //
-// It is implemented without locking: it only does atomic loads of the writer cursor (and epoch)
-// and then reads already-written items from the buffer.
+// It returns true only if it finds an item for which cmp(item) == 0 (an exact match) in the
+// current buffer window. If found, it positions the subscriber to read FROM that matched
+// item (i.e. the next Read() returns the matched item).
 //
-// It searches within the safe readable range [writePos-maxLag, writePos) (clamped to 0 before the
-// first writePos overflow) and sets s.pos to the first item where cmp(item) >= 0.
+// If no exact match exists in the current window, Seek positions the subscriber at the tail
+// (future-only data) and returns false.
 //
-// The cmp function must be monotonic with the write order over the searched window:
-//   - return < 0 if the current item is "too low"  (seek forward)
-//   - return = 0 if the current item is acceptable (stop)
-//   - return > 0 if the current item is "too high" (seek backward)
+// Requirement: data in the searchable window must be ordered by a monotonically increasing key
+// (e.g. message ID, timestamp, offset) as observed by cmp. If this requirement is violated,
+// Seek still terminates but the result is not meaningful.
 //
-// Hinting:
-// The magnitude of the returned value may be used as a one-shot hint in *items*.
-// If cmp returns a value that approximates "how many items away" the target is from the current probe,
-// Seek will try to jump the next probe by that amount once (probe = probe - cmp(item)), and then it
-// continues with classic bisection.
+// Comparator contract (BinarySearch-style):
 //
-// The hint is always clamped to the current binary-search bounds, and Seek always maintains classic
-// [lo, hi) bisection bounds, so correctness depends only on the sign being monotonic. When the hint is
-// not helpful (e.g. sparse IDs, duplicates), Seek naturally falls back to classic bisection. Worst-case
-// complexity remains O(log N) comparisons.
+//	< 0: item is too low
+//	= 0: exact match
+//	> 0: item is too high
 //
-// Typical usage is to seek by a monotonically increasing key (message ID, timestamp, offset):
+// Worst-case time complexity is O(log N) comparisons.
 //
-//	// Position to the first message with ID >= targetID.
-//	found := sub.Seek(func(m Message) int64 { return m.ID - targetID })
+// Basic example (seek to an exact message ID):
 //
-// If no item in the buffered window satisfies cmp(item) >= 0, Seek positions the subscriber at the
-// current writePos (so it will only receive future items) and returns false.
+//	found := sub.Seek(func(msg *Message) int {
+//		return cmp.Compare(msg.ID, 123)
+//	})
+//	if !found {
+//		return
+//	}
+//	// Next Read() returns the matched message (ID==targetID).
+func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
+	found, matchPos := s.seek(cmp)
+	if !found {
+		return false
+	}
+	s.pos = matchPos
+	return true
+}
+
+// SeekAfter is like Seek, but positions the subscriber AFTER the matched item.
 //
-// Note: If cmp is not monotonic (or the stream is not ordered by the key), the result is undefined.
-func (s *Subscriber[T]) Seek(cmp func(T) int64) bool {
+// It returns true only if it finds an item for which cmp(item) == 0 (an exact match) in the
+// current buffer window. If found, it positions the subscriber to read the item immediately
+// AFTER the matched one (i.e. the next Read() returns the following item, or it tails if the
+// match was the last buffered item).
+//
+// If no exact match exists in the current window, SeekAfter positions the subscriber at the
+// tail (future-only data) and returns false.
+//
+// Same monotonicity requirements as Seek.
+//
+// Basic example (reconnect after the last processed message ID):
+//
+//	lastProcessedID := int64(123)
+//	found := sub.SeekAfter(func(msg *Message) int {
+//		return cmp.Compare(msg.ID, lastProcessedID)
+//	})
+//	if !found {
+//		return
+//	}
+//	// Next Read() returns the first message after lastProcessedID.
+func (s *Subscriber[T]) SeekAfter(cmp func(T) int) bool {
+	found, matchPos := s.seek(cmp)
+	if !found {
+		return false
+	}
+
+	// Advance by one; if the match was the last buffered item, this equals writePos (tail).
+	s.pos = matchPos + 1
+	return true
+}
+
+// seek finds an exact match within the current buffer window.
+// On success it returns (true, matchPos) where matchPos is the absolute ring-buffer position.
+// On failure it seeks to tail and returns (false, 0).
+func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64) {
 	rb := s.ringBuf
 	writePos := rb.writePos.Load()
 
-	// Compute the earliest safe readable position for this subscriber.
-	// We must handle uint64 wrap-around: we search by offsets (distance) rather than raw positions.
 	minPos := writePos - s.maxLag
 	if writePos < s.maxLag && rb.writeEpoch.Load() == 0 {
-		// Before the first writePos overflow, positions < 0 never existed.
 		minPos = 0
 	}
 
-	window := writePos - minPos // number of items in [minPos, writePos)
+	window := writePos - minPos
 	if window == 0 {
 		s.pos = writePos
-		return false
+		return false, 0
 	}
 
-	// Lower-bound search for first position with cmp(item) >= 0.
-	// We keep classic [lo, hi) bounds, but we may use cmp magnitude as a one-shot hint for the next probe.
-	lo, hi := uint64(0), window
-	var (
-		prevProbe uint64
-		prevCmp   int64
-		havePrev  bool
-		useHint   = true
-	)
-	for lo < hi {
-		probe := lo + (hi-lo)/2 // classic bisection probe
-		if havePrev && useHint && hi > lo {
-			// Hint probe: probe = prevProbe - prevCmp (moves "towards target" if prevCmp is a true distance in items).
-			cand := int64(prevProbe) - prevCmp
-			if cand < int64(lo) {
-				cand = int64(lo)
-			}
-			// Keep probe within [lo, hi).
-			if cand >= int64(hi) {
-				cand = int64(hi - 1)
-			}
-			if uint64(cand) != prevProbe {
-				probe = uint64(cand)
-			}
-			useHint = false
-		}
+	// sort.Search indexes with int; if the window doesn't fit into int (on 32-bit CPU),
+	// cap it to the most recent MaxInt items so we can still search something meaningful.
+	maxN := uint64(math.MaxInt)
+	window = min(window, maxN)
+	minPos = writePos - window
+	n := int(window)
 
-		pos := minPos + probe
-		item := rb.buf[pos%rb.size]
-		v := cmp(item)
-		if v < 0 {
-			lo = probe + 1
-		} else {
-			hi = probe
-		}
-
-		prevProbe = probe
-		prevCmp = v
-		havePrev = true
-	}
-
-	if lo == window {
-		// Not found: move to tail (future-only).
+	lb := sort.Search(n, func(i int) bool {
+		pos := minPos + uint64(i)
+		return cmp(rb.buf[pos%rb.size]) >= 0
+	})
+	if lb == n {
 		s.pos = writePos
-		return false
+		return false, 0
 	}
 
-	s.pos = minPos + lo
-	return true
+	pos := minPos + uint64(lb)
+	if cmp(rb.buf[pos%rb.size]) != 0 {
+		s.pos = writePos
+		return false, 0
+	}
+	return true, pos
 }
 
 // Iter() returns iterator for consuming items from the ring buffer.

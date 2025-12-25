@@ -61,7 +61,7 @@ func TestWritePosOverflow(t *testing.T) {
 	items = getItems(3)
 	t.Logf("writer: Writing %+v", items)
 	stream.Write(items...)
-	time.Sleep(1 * time.Millisecond)
+	time.Sleep(100 * time.Microsecond)
 
 	// Late subscriber that will read historical data from the end of the buffer.
 	sub4 := stream.Subscribe(ctx, &SubscribeOpts{Name: "sub4", IterBatchSize: 100, StartBehind: numItems()})
@@ -85,7 +85,7 @@ func TestWritePosOverflow(t *testing.T) {
 		items := getItems(3)
 		t.Logf("writer: Writing %+v", items)
 		stream.Write(items...)
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(100 * time.Microsecond)
 	}
 
 	stream.Close()
@@ -140,7 +140,7 @@ func TestSeekWritePosOverflow(t *testing.T) {
 	})
 
 	targetID := int64(0)
-	found := sub.Seek(func(item *Data) int64 {
+	found := sub.Seek(func(item *Data) int {
 		switch {
 		case item.ID < targetID:
 			return -1
@@ -151,7 +151,7 @@ func TestSeekWritePosOverflow(t *testing.T) {
 		}
 	})
 	if !found {
-		t.Fatalf("expected to find ID >= %v", targetID)
+		t.Fatalf("expected to find ID %v", targetID)
 	}
 
 	items := make([]*Data, 1)
@@ -162,6 +162,7 @@ func TestSeekWritePosOverflow(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("unexpected n: %v", n)
 	}
+	// Seek positions the subscriber at the matched ID.
 	if items[0].ID != targetID {
 		t.Fatalf("expected ID %v, got %v", targetID, items[0].ID)
 	}

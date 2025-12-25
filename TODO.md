@@ -51,3 +51,7 @@
                 return true
     ```
 - [x] Revisit `Skip()` method. Instead of walking the available items sequentially, enable "bisect" mode (binary search) where user would be able to tell if their messageID is too low or too high. Let them rewind or forward, perhaps by returning a number? Aim for O(log N) complexity. Call it `Seek()`?
+- [x] OK, now we have `Seek()` and `SeekAfter()` methods with binary search. Is it worth for end-users to provide a "hint distance" rather than (-1, 0, 1), so we can help them jump right into the correct item assuming they can compute the distance between current item and last known item in their reconnection logic?
+    - Pros: Helps improve the performance when the exact distance is known (e.g. when seeking through sequential IDs). At buffer window of million items, it can lower the comparisons by up to ~20 jumps (~5 on avg).
+    - Cons: Adds extra two search comparisons at all times if misused. Makes seek code slightly more coplex. Makes code less readable end users, since search/compare functions in stdlib don't have this concept at all.
+    - Result: I don't think this is worth the extra complexity for now. The code is much more readable when used with stdlib's cmp.Compare(msg.ID, lastProcessedID).

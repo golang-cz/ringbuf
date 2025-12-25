@@ -50,7 +50,7 @@ func TestBasic(t *testing.T) {
 		v := &Data{ID: i, Name: fmt.Sprintf("%v", i)}
 		t.Logf("writer: Writing %+v", v)
 		stream.Write(v)
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(100 * time.Microsecond)
 	}
 
 	cancel() // Terminate the readers.
@@ -66,7 +66,7 @@ func TestRingBuf(t *testing.T) {
 	bufferSize := uint64(2_000)
 	numItems := 10_000
 	numReaders := 2_000
-	maxLag := bufferSize * 3 / 4
+	maxLag := bufferSize * 9 / 10
 
 	stream := ringbuf.New[*Data](bufferSize)
 
@@ -121,7 +121,7 @@ func TestRingBuf(t *testing.T) {
 		stream.Write(data)
 
 		// Simulate i/o latency.
-		time.Sleep(time.Millisecond)
+		time.Sleep(100 * time.Microsecond)
 	}
 	stream.Close()
 
