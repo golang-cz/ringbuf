@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sync"
 	"testing"
@@ -50,7 +51,7 @@ func TestWritePosOverflow(t *testing.T) {
 				t.Logf("%v:   Reading %+v", sub.Name, val)
 				read++
 			}
-			if err := sub.Err(); !errors.Is(err, ErrClosed) {
+			if err := sub.Err(); !errors.Is(err, io.EOF) {
 				t.Errorf("%v: %v", sub.Name, err)
 			}
 
@@ -74,7 +75,7 @@ func TestWritePosOverflow(t *testing.T) {
 			t.Logf("%v:   Reading %+v", sub4.Name, val)
 			read++
 		}
-		if err := sub4.Err(); !errors.Is(err, ErrClosed) {
+		if err := sub4.Err(); !errors.Is(err, io.EOF) {
 			t.Errorf("%v: %v", sub4.Name, err)
 		}
 

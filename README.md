@@ -54,7 +54,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -81,7 +83,7 @@ func main() {
 		fmt.Println(event)
 	}
 
-	if err := sub.Err(); !errors.Is(err, ringbuf.ErrClosed) {
+	if err := sub.Err(); !errors.Is(err, io.EOF) {
 		log.Fatal(err)
 	}
 }
@@ -162,13 +164,13 @@ Read in a loop into a caller-managed slice (0 allocations on the hot path):
 
 ```go
 // Consumer: batch read.
-sub := stream.Subscribe(ctx)
+sub := stream.Subscribe(ctx, nil)
 
 events := make([]string, 100)
 for {
 	n, err := sub.Read(events)
 	if err != nil {
-		// err is typically ringbuf.ErrClosed, ringbuf.ErrTooSlow, or ctx error.
+		// err is typically io.EOF (end of stream), ringbuf.ErrTooSlow, or ctx error.
 		break
 	}
 
