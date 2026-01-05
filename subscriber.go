@@ -2,6 +2,7 @@ package ringbuf
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -10,8 +11,8 @@ import (
 )
 
 var (
-	ErrTooSlow = fmt.Errorf("ringbuf: subscriber too slow: %w", io.ErrUnexpectedEOF)
-	ErrClosed  = fmt.Errorf("ringbuf: closed (end of stream): %w", io.EOF)
+	ErrTooSlow     = errors.New("ringbuf: subscriber too slow")
+	errEndOfStream = fmt.Errorf("ringbuf: end of stream: %w", io.EOF)
 )
 
 // Subscriber is an independent ring buffer reader maintaining its own position.
@@ -26,10 +27,41 @@ type Subscriber[T any] struct {
 	iterErr       error
 }
 
-// Read reads up to len(items) items into items.
+// Read reads up to len(p) items into p and returns n, the number of items copied.
 //
-// Note: If no new items are available, Read() will block until the next Write() call.
-func (s *Subscriber[T]) Read(items []T) (int, error) {
+// On success, the caller must only read from p[:n].
+//
+// If no new items are available, Read() will block until:
+// - the next Write() call,
+// - the ring buffer is closed (end of stream), or
+// - the subscriber context ends.
+//
+// Example usage:
+//
+//	items := make([]T, 32)
+//	for {
+//		n, err := sub.Read(items)
+//		if err != nil {
+//			switch {
+//			case errors.Is(err, io.EOF):
+//				// End of stream (writer closed and no more data will be written).
+//				return
+//			case errors.Is(err, ErrTooSlow):
+//				// The subscriber fell too far behind (MaxLag exceeded) and was dropped.
+//				return
+//			case errors.Is(err, context.Canceled):
+//				return
+//			case errors.Is(err, context.DeadlineExceeded):
+//				return
+//			default:
+//				// Unexpected error.
+//				return
+//			}
+//		}
+//
+//		// Process items[:n].
+//	}
+func (s *Subscriber[T]) Read(p []T) (int, error) {
 	pos := s.pos
 	ringBuf := s.ringBuf
 
@@ -46,7 +78,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 
 		// Lock-free hot path.
 		if pos != writePos {
-			return s.readAvailable(pos, writePos, items), nil
+			return s.readAvailable(pos, writePos, p), nil
 		}
 
 		// Check for end of stream.
@@ -56,7 +88,7 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 			return 0, s.ctx.Err()
 		case <-ringBuf.closed:
 			s.ringBuf.numSubscribers.Add(-1)
-			return 0, ErrClosed
+			return 0, errEndOfStream
 		default:
 		}
 
@@ -66,14 +98,14 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 		writePos = ringBuf.writePos.Load()
 		if pos != writePos {
 			ringBuf.mu.Unlock()
-			return s.readAvailable(pos, writePos, items), nil
+			return s.readAvailable(pos, writePos, p), nil
 		}
 
 		select {
 		case <-ringBuf.closed:
 			ringBuf.mu.Unlock()
 			s.ringBuf.numSubscribers.Add(-1)
-			return 0, ErrClosed
+			return 0, errEndOfStream
 		default:
 		}
 
@@ -83,8 +115,6 @@ func (s *Subscriber[T]) Read(items []T) (int, error) {
 	}
 }
 
-// readAvailable copies available items from the ring buffer into the provided slice.
-// It updates the subscriber's position and returns the number of items copied.
 func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) int {
 	ringBuf := s.ringBuf
 	maxRead := min(uint64(len(items)), writePos-pos)
@@ -151,7 +181,7 @@ func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
 	return true
 }
 
-// SeekAfter is like Seek, but positions the subscriber after the matched item.
+// SeekAfter is like Seek(), but positions the subscriber after the matched item.
 //
 // It returns true only if it finds an item for which cmp(item) == 0 (an exact match) in the
 // current buffer window. If found, it positions the subscriber to read the item immediately
@@ -161,7 +191,7 @@ func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
 // If no exact match exists in the current window, SeekAfter positions the subscriber at the
 // tail (future-only data) and returns false.
 //
-// Same monotonicity requirements as Seek.
+// Same monotonicity requirements as Seek().
 //
 // Basic example (reconnect after the last processed message ID):
 //
@@ -215,7 +245,7 @@ func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64, uint64) {
 	return true, pos, writePos
 }
 
-// Iter() returns iterator for consuming items from the ring buffer.
+// Iter returns iterator for consuming items from the ring buffer.
 // Must be called at most once per Subscriber, otherwise it will result in undefined behavior.
 //
 // Call .Err() to check for errors after the iteration is done.
@@ -243,12 +273,26 @@ func (s *Subscriber[T]) Iter() iter.Seq[T] {
 }
 
 // Err returns the terminal error that stopped iteration, if any.
-// It must be called after .Iter() completes.
-// Common errors:
-// - ErrClosed/io.EOF                  - ring buffer was closed (end of stream)
-// - ErrTooSlow/io.ErrUnexpectedEOF    - subscriber fell too far behind
-// - context.Canceled/DeadlineExceeded - subscriber context was canceled or timed out
-// Returns nil if no error occurred.
+//
+// It must be called after the range loop over .Iter() completes.
+//
+// Example error handling:
+//
+//	err := sub.Err()
+//	if !errors.Is(err, io.EOF) {
+//		switch {
+//		case errors.Is(err, ringbuf.ErrTooSlow):
+//			// The subscriber fell too far behind (MaxLag exceeded) and was dropped.
+//		case errors.Is(err, context.Canceled):
+//			// The subscriber's context was canceled by the caller.
+//		case errors.Is(err, context.DeadlineExceeded):
+//			// The subscriber's context deadline was exceeded.
+//		default:
+//			// Unexpected error.
+//		}
+//	}
+//
+// Err returns nil if the caller didn't finish iterating over .Iter().
 func (s *Subscriber[T]) Err() error {
 	return s.iterErr
 }

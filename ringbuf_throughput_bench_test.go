@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -101,7 +102,7 @@ func BenchmarkThroughput(b *testing.B) {
 						n, err := sub.Read(items)
 						if err != nil {
 							// Expected shutdown conditions.
-							if errors.Is(err, ringbuf.ErrClosed) || errors.Is(err, context.Canceled) {
+							if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
 								return
 							}
 							recordErr(err) // incl. ErrTooSlow
