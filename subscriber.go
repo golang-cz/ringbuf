@@ -19,7 +19,7 @@ var (
 type Subscriber[T any] struct {
 	Name string
 
-	ringBuf       *RingBuffer[T]
+	rb            *RingBuffer[T]
 	pos           uint64
 	maxLag        uint64
 	ctx           context.Context
@@ -62,95 +62,103 @@ type Subscriber[T any] struct {
 //		// Process items[:n].
 //	}
 func (s *Subscriber[T]) Read(p []T) (int, error) {
-	pos := s.pos
-	ringBuf := s.ringBuf
-
 	var writePos uint64
 	for {
-		writePos = ringBuf.writePos.Load()
+		writePos = s.rb.writePos.Load()
 
 		// Return error if the reader is too far behind.
-		lag := writePos - pos
+		lag := writePos - s.pos
 		if lag > s.maxLag {
-			s.ringBuf.numSubscribers.Add(-1)
+			s.rb.numSubscribers.Add(-1)
 			return 0, fmt.Errorf("subscriber[%v] fell behind (lag=%v, maxLag=%v): %w", s.Name, lag, s.maxLag, ErrTooSlow)
 		}
 
 		// Lock-free hot path.
-		if pos != writePos {
-			return s.readAvailable(pos, writePos, p), nil
+		if s.pos != writePos {
+			return s.readAvailable(s.pos, writePos, p), nil
 		}
 
 		// Check for end of stream.
-		select {
-		case <-s.ctx.Done():
-			s.ringBuf.numSubscribers.Add(-1)
-			return 0, s.ctx.Err()
-		case <-ringBuf.closed:
-			// Drain any remaining buffered items before returning EOF.
-			writePos = ringBuf.writePos.Load()
-			if pos != writePos {
-				return s.readAvailable(pos, writePos, p), nil
+		if writePos, err, ok := s.checkEnd(s.pos); ok {
+			if err != nil {
+				return 0, err
 			}
-			s.ringBuf.numSubscribers.Add(-1)
-			return 0, errEndOfStream
-		default:
+			return s.readAvailable(s.pos, writePos, p), nil
 		}
 
 		// Acquire lock and double-check the position.
-		ringBuf.mu.Lock()
+		s.rb.mu.Lock()
 
-		writePos = ringBuf.writePos.Load()
-		if pos != writePos {
-			ringBuf.mu.Unlock()
-			return s.readAvailable(pos, writePos, p), nil
+		writePos = s.rb.writePos.Load()
+		if s.pos != writePos {
+			s.rb.mu.Unlock()
+			return s.readAvailable(s.pos, writePos, p), nil
 		}
 
-		select {
-		case <-ringBuf.closed:
-			// Drain any remaining buffered items before returning EOF.
-			writePos = ringBuf.writePos.Load()
-			if pos != writePos {
-				ringBuf.mu.Unlock()
-				return s.readAvailable(pos, writePos, p), nil
+		// Check for end of stream.
+		if writePos, err, ok := s.checkEnd(s.pos); ok {
+			s.rb.mu.Unlock()
+			if err != nil {
+				return 0, err
 			}
-			ringBuf.mu.Unlock()
-			s.ringBuf.numSubscribers.Add(-1)
-			return 0, errEndOfStream
-		default:
+			return s.readAvailable(s.pos, writePos, p), nil
 		}
 
-		// Wait for new data. Wake up on broadcast signal and try again.
-		ringBuf.cond.Wait()
-		ringBuf.mu.Unlock()
+		// Wait for new data. Will wake up and retry on broadcast signal.
+		s.rb.cond.Wait()
+		s.rb.mu.Unlock()
 	}
 }
 
+// readAvailable copies up to len(items) buffered items in [pos, writePos) into items and advances s.pos.
 func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) int {
-	ringBuf := s.ringBuf
 	maxRead := min(uint64(len(items)), writePos-pos)
 	if maxRead == 0 {
 		return 0
 	}
 
-	start := pos % ringBuf.size
+	start := pos % s.rb.size
 	end := start + maxRead
 
 	var n int
-	if end <= ringBuf.size {
-		n = copy(items, ringBuf.buf[start:end])
+	if end <= s.rb.size {
+		n = copy(items, s.rb.buf[start:end])
 	} else {
 		// Buffer overflow: read until end and then from the beginning.
-		n = copy(items, ringBuf.buf[start:])
-		n += copy(items[n:], ringBuf.buf[:end-ringBuf.size])
+		n = copy(items, s.rb.buf[start:])
+		n += copy(items[n:], s.rb.buf[:end-s.rb.size])
 	}
 	s.pos += uint64(n)
 
 	return n
 }
 
-// Seek positions the subscriber using a lock-free binary search within the current buffer
-// window (up to MaxLag behind the writer).
+// checkEnd checks whether the subscriber should stop due to context cancellation or stream closure.
+//
+// If it returns ok==true:
+//   - err != nil: caller should return (0, err)
+//   - err == nil: caller should drain remaining buffered items using the returned writePos
+func (s *Subscriber[T]) checkEnd(pos uint64) (writePos uint64, err error, ok bool) {
+	select {
+	case <-s.ctx.Done():
+		s.rb.numSubscribers.Add(-1)
+		return 0, s.ctx.Err(), true
+	case <-s.rb.closed:
+		// Drain any remaining buffered items before returning EOF.
+		// Re-read the writePos to avoid races.
+		writePos = s.rb.writePos.Load()
+		if pos != writePos {
+			return writePos, nil, true
+		}
+		s.rb.numSubscribers.Add(-1)
+		return 0, errEndOfStream, true
+	default:
+		return 0, nil, false
+	}
+}
+
+// Seek positions the subscriber at the matched item using a lock-free binary search within
+// the current buffer window (up to MaxLag behind the writer).
 //
 // It returns true only if it finds an item for which cmp(item) == 0 (an exact match) in the
 // current buffer window. If found, it positions the subscriber to read FROM that matched
@@ -192,7 +200,7 @@ func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
 	return true
 }
 
-// SeekAfter is like Seek(), but positions the subscriber after the matched item.
+// SeekAfter is like Seek(), but positions the subscriber right after the matched item.
 //
 // It returns true only if it finds an item for which cmp(item) == 0 (an exact match) in the
 // current buffer window. If found, it positions the subscriber to read the item immediately
@@ -202,7 +210,7 @@ func (s *Subscriber[T]) Seek(cmp func(T) int) bool {
 // If no exact match exists in the current window, SeekAfter positions the subscriber at the
 // tail (future-only data) and returns false.
 //
-// Same monotonicity requirements as Seek().
+// Same ordering and comparator contract requirements as Seek().
 //
 // Basic example (reconnect after the last processed message ID):
 //
@@ -230,11 +238,10 @@ func (s *Subscriber[T]) SeekAfter(cmp func(T) int) bool {
 // position and tailPos is the writePos snapshot used for this search.
 // On failure it returns (false, 0, tailPos).
 func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64, uint64) {
-	rb := s.ringBuf
-	writePos := rb.writePos.Load()
+	writePos := s.rb.writePos.Load()
 
 	window := min(s.maxLag, uint64(math.MaxInt)) // sort.Search is limited on 32-bit CPUs
-	if writePos < window && rb.writeEpoch.Load() == 0 {
+	if writePos < window && s.rb.writeEpoch.Load() == 0 {
 		// Before the first writePos overflow, positions < 0 never existed.
 		window = writePos
 	}
@@ -243,14 +250,14 @@ func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64, uint64) {
 	// lower-bound: the first "match candidate" (we still need to confirm exact match)
 	lb := sort.Search(int(window), func(i int) bool {
 		pos := minPos + uint64(i)
-		return cmp(rb.buf[pos%rb.size]) >= 0
+		return cmp(s.rb.buf[pos%s.rb.size]) >= 0
 	})
 	if lb == int(window) {
 		return false, 0, writePos
 	}
 
 	pos := minPos + uint64(lb)
-	if cmp(rb.buf[pos%rb.size]) != 0 {
+	if cmp(s.rb.buf[pos%s.rb.size]) != 0 {
 		return false, 0, writePos
 	}
 	return true, pos, writePos
