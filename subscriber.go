@@ -87,6 +87,11 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 			s.ringBuf.numSubscribers.Add(-1)
 			return 0, s.ctx.Err()
 		case <-ringBuf.closed:
+			// Drain any remaining buffered items before returning EOF.
+			writePos = ringBuf.writePos.Load()
+			if pos != writePos {
+				return s.readAvailable(pos, writePos, p), nil
+			}
 			s.ringBuf.numSubscribers.Add(-1)
 			return 0, errEndOfStream
 		default:
@@ -103,6 +108,12 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 
 		select {
 		case <-ringBuf.closed:
+			// Drain any remaining buffered items before returning EOF.
+			writePos = ringBuf.writePos.Load()
+			if pos != writePos {
+				ringBuf.mu.Unlock()
+				return s.readAvailable(pos, writePos, p), nil
+			}
 			ringBuf.mu.Unlock()
 			s.ringBuf.numSubscribers.Add(-1)
 			return 0, errEndOfStream
