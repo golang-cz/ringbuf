@@ -13,7 +13,7 @@ type Event struct {
 	Time time.Time
 }
 
-func TestSeek_Reconnect(t *testing.T) {
+func TestSubscriberReconnect(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -11,7 +11,7 @@ import (
 	"github.com/golang-cz/ringbuf"
 )
 
-func TestSeek_Input(t *testing.T) {
+func TestSubscriberSeek(t *testing.T) {
 	cases := []struct {
 		name            string
 		ids             []int

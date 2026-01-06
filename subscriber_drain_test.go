@@ -9,10 +9,8 @@ import (
 	"time"
 )
 
-// Regression test for drain-after-close semantics:
-// Read must not return EOF while there are still buffered items available to drain,
-// even if Close races with the reader's observation of writePos.
-func TestReadDrainsAfterClose(t *testing.T) {
+// Read() must not return io.EOF until the data is drained, even if Close() was called.
+func TestSubscriberDrainsClosedStream(t *testing.T) {
 	const iters = 2000
 
 	for i := 0; i < iters; i++ {
