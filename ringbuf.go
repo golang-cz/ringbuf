@@ -111,7 +111,7 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 
 	sub := &Subscriber[T]{
 		Name:          opts.Name,
-		ringBuf:       rb,
+		rb:            rb,
 		pos:           startPos,
 		ctx:           ctx,
 		maxLag:        maxBehind,
