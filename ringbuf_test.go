@@ -21,49 +21,7 @@ func (d *Data) String() string {
 	return fmt.Sprintf("Data{ID: %v, Name: %v}", d.ID, d.Name)
 }
 
-func TestBasic(t *testing.T) {
-	stream := ringbuf.New[*Data](100)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sub1 := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{Name: "sub1"})
-	sub2 := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{Name: "sub2"})
-	sub3 := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{Name: "sub3"})
-
-	wg := sync.WaitGroup{}
-	wg.Add(3)
-	for _, sub := range []*ringbuf.Subscriber[*Data]{sub1, sub2, sub3} {
-		go func() {
-			sub := sub
-			defer wg.Done()
-
-			for val := range sub.Iter() {
-				t.Logf("%v:   Reading %+v", sub.Name, val)
-			}
-			if err := sub.Err(); !errors.Is(err, context.Canceled) {
-				t.Errorf("%v: %v", sub.Name, err)
-			}
-		}()
-	}
-
-	for i := range 1000 {
-		v := &Data{ID: i, Name: fmt.Sprintf("%v", i)}
-		t.Logf("writer: Writing %+v", v)
-		stream.Write(v)
-		time.Sleep(100 * time.Microsecond)
-	}
-
-	cancel() // Terminate the readers.
-
-	last := &Data{ID: 1001, Name: "last"}
-	t.Logf("writer: Writing %+v", last)
-	stream.Write(last)
-
-	wg.Wait()
-}
-
-func TestRingBuf(t *testing.T) {
+func TestRingbuf(t *testing.T) {
 	bufferSize := uint64(2_000)
 	numItems := 10_000
 	numReaders := 2_000
@@ -86,29 +44,37 @@ func TestRingBuf(t *testing.T) {
 			defer wg.Done()
 			sub := sub
 
+			items := make([]*Data, 64)
 			var count int
-			for val := range sub.Iter() {
-				if val.ID != count {
-					t.Errorf("unexpected data: expected %v, got %v", count, val)
-					cancel()
-					return
+			for {
+				n, err := sub.Read(items)
+				if err != nil {
+					if !errors.Is(err, io.EOF) {
+						t.Errorf("unexpected error: %v", err)
+						cancel()
+						return
+					}
+					break
 				}
-				if val.Name != fmt.Sprintf("%v", count) {
-					t.Errorf("unexpected data: expected %v, got %v", count, val)
-					cancel()
-					return
+
+				for i := range n {
+					val := items[i]
+					if val.ID != count {
+						t.Errorf("unexpected data: expected %v, got %v", count, val)
+						cancel()
+						return
+					}
+					if val.Name != fmt.Sprintf("%v", count) {
+						t.Errorf("unexpected data: expected %v, got %v", count, val)
+						cancel()
+						return
+					}
+					count++
 				}
-				count++
 			}
 
 			if count != numItems {
 				t.Errorf("expected %v items, got %v", numItems, count)
-			}
-
-			if err := sub.Err(); !errors.Is(err, io.EOF) {
-				t.Errorf("unexpected error: %v", err)
-				cancel()
-				return
 			}
 		}()
 	}

@@ -19,6 +19,11 @@ func (d *Data) String() string {
 	return fmt.Sprintf("Data{ID: %v}", d.ID)
 }
 
+// Test extremely rare case of buffer write position overflow (after 2^64 writes).
+//
+// - At 100M ops/sec: overflow occurs after ~5.8 years
+// - At   1B ops/sec: overflow occurs after ~584 days
+// - At  10B ops/sec: overflow occurs after ~58 days
 func TestWritePosOverflow(t *testing.T) {
 	stream := New[*Data](100)
 
