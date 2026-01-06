@@ -62,15 +62,11 @@ func BenchmarkThroughput(b *testing.B) {
 			// Shared stats + first error.
 			var deliveredReads atomic.Uint64
 			var fellBehind atomic.Uint64
-			var firstErrMu sync.Mutex
-			var firstErr error
+			var firstErr atomic.Pointer[error]
 			recordErr := func(err error) {
-				fellBehind.Store(1)
-				firstErrMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				firstErrMu.Unlock()
+				fellBehind.Add(1)
+				e := err
+				firstErr.CompareAndSwap(nil, &e)
 			}
 
 			// Start subscribers (wait until all are ready, then start together).
@@ -80,11 +76,10 @@ func BenchmarkThroughput(b *testing.B) {
 			wgReady.Add(subs)
 			wgReaders.Add(subs)
 
-			cancels := make([]context.CancelFunc, 0, subs)
-			for i := range subs {
-				ctx, cancel := context.WithCancel(context.Background())
-				cancels = append(cancels, cancel)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
+			for i := range subs {
 				sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 					Name:          fmt.Sprintf("sub-%d", i),
 					MaxLag:        *flagBufferSize * 9 / 10, // Allow readers to fall behind, but fail fast if they can't keep up.
@@ -126,7 +121,7 @@ func BenchmarkThroughput(b *testing.B) {
 				}
 			}
 
-			// Phase 1: write b.N items.
+			// Produce items: Write batch of items b.N times
 			b.ResetTimer()
 			t0 := time.Now()
 			for i := 0; i < b.N; i++ {
@@ -142,36 +137,26 @@ func BenchmarkThroughput(b *testing.B) {
 			elapsed := time.Since(t0)
 			b.StopTimer()
 
-			// Phase 2: stop readers (cancel + repeated broadcast-only flush).
-			for _, cancel := range cancels {
-				cancel()
-			}
-
 			done := make(chan struct{})
 			go func() {
 				wgReaders.Wait()
 				close(done)
 			}()
 
-			deadline := time.NewTimer(2 * time.Second)
+			deadline := time.NewTimer(1 * time.Second)
 			defer deadline.Stop()
 
-			shutdownDone := false
-			shutdownTimedOut := false
-			for {
-				select {
-				case <-done:
-					shutdownDone = true
-				case <-deadline.C:
-					recordErr(fmt.Errorf("benchmark shutdown timed out (readers did not exit)"))
-					shutdownTimedOut = true
-				default:
-					stream.Write() // broadcast-only "flush"
-					time.Sleep(100 * time.Microsecond)
-				}
-				if shutdownDone || shutdownTimedOut {
-					break
-				}
+			select {
+			case <-done:
+				// All readers exited.
+
+			case <-deadline.C:
+				// Wake up all readers to exit.
+				cancel()
+				stream.Close()
+
+				// Wait for all readers to exit.
+				<-done
 			}
 
 			// Report metrics.
@@ -184,11 +169,9 @@ func BenchmarkThroughput(b *testing.B) {
 			b.ReportMetric(float64(fellBehind.Load()), "errors")
 
 			// Shown with `-test.v` (keeps benchmark output readable by default).
-			firstErrMu.Lock()
-			if firstErr != nil {
-				b.Logf("benchmark overload: %v", firstErr)
+			if errPtr := firstErr.Load(); errPtr != nil {
+				b.Logf("overloaded: first subscriber error: %v", *errPtr)
 			}
-			firstErrMu.Unlock()
 		})
 	}
 }
