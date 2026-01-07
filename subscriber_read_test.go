@@ -61,3 +61,50 @@ func TestSubscriberRead(t *testing.T) {
 
 	wg.Wait()
 }
+
+// Read() with a zero-length destination must not block indefinitely.
+//
+// Rationale: if Read() blocks on an empty buffer (or spins when data exists),
+// callers can accidentally deadlock or livelock. This test ensures Read([]T{})
+// returns promptly so it can't get "stuck".
+func TestSubscriberReadZeroLengthSliceDoesNotBlock(t *testing.T) {
+	stream := ringbuf.New[int](100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sub := stream.Subscribe(ctx, nil)
+	t.Cleanup(cancel)
+
+	p := make([]int, 0)
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		n, err := sub.Read(p)
+		done <- result{n: n, err: err}
+	}()
+
+	const wait = 15 * time.Millisecond
+
+	select {
+	case <-done:
+		// OK (returned promptly).
+		return
+	case <-time.After(wait):
+		// Unblock the goroutine to avoid leaking it:
+		// - Write(0) wakes the cond.Wait() path
+		// - Cancel makes checkEnd() return on the next loop
+		stream.Write()
+		cancel()
+
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+		}
+
+		t.Fatalf("Read([]T{}) blocked for > %v; it should return promptly", wait)
+	}
+}
