@@ -62,6 +62,10 @@ type Subscriber[T any] struct {
 //		// Process items[:n].
 //	}
 func (s *Subscriber[T]) Read(p []T) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
 	var writePos uint64
 	for {
 		writePos = s.rb.writePos.Load()
