@@ -73,7 +73,6 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 		// Return error if the reader is too far behind.
 		lag := writePos - s.pos
 		if lag > s.maxLag {
-			s.rb.numSubscribers.Add(-1)
 			return 0, fmt.Errorf("subscriber[%v] fell behind (lag=%v, maxLag=%v): %w", s.Name, lag, s.maxLag, ErrTooSlow)
 		}
 
@@ -145,7 +144,6 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) in
 func (s *Subscriber[T]) checkEnd(pos uint64) (writePos uint64, err error, ok bool) {
 	select {
 	case <-s.ctx.Done():
-		s.rb.numSubscribers.Add(-1)
 		return 0, s.ctx.Err(), true
 	case <-s.rb.closed:
 		// Drain any remaining buffered items before returning EOF.
@@ -154,7 +152,6 @@ func (s *Subscriber[T]) checkEnd(pos uint64) (writePos uint64, err error, ok boo
 		if pos != writePos {
 			return writePos, nil, true
 		}
-		s.rb.numSubscribers.Add(-1)
 		return 0, errEndOfStream, true
 	default:
 		return 0, nil, false

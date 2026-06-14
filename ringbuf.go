@@ -43,10 +43,6 @@ type RingBuffer[T any] struct {
 	// Used to detect if subscriber can read historical data from end of the buffer.
 	writeEpoch atomic.Uint64
 
-	// Number of active subscribers. Used for metrics and debugging.
-	// Note: A signed integer, so we can decrement the counter by .Add(-1).
-	numSubscribers atomic.Int64
-
 	// Channel indicating for subscribers that the ring buffer has been closed and no new
 	// data will be available for reading.
 	closed chan struct{}
@@ -109,7 +105,7 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		startPos = 0
 	}
 
-	sub := &Subscriber[T]{
+	return &Subscriber[T]{
 		Name:          opts.Name,
 		rb:            rb,
 		pos:           startPos,
@@ -117,9 +113,6 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		maxLag:        maxBehind,
 		iterBatchSize: iterBatchSize,
 	}
-
-	rb.numSubscribers.Add(1)
-	return sub
 }
 
 // Write inserts items into the ring buffer and wakes up all waiting subscribers to read them.
@@ -160,10 +153,6 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 func (rb *RingBuffer[T]) Close() {
 	close(rb.closed)
 	rb.cond.Broadcast()
-}
-
-func (rb *RingBuffer[T]) NumSubscribers() int64 {
-	return rb.numSubscribers.Load()
 }
 
 func (rb *RingBuffer[T]) Size() uint64 {
