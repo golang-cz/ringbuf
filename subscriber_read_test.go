@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -106,5 +107,178 @@ func TestSubscriberReadZeroLengthSliceDoesNotBlock(t *testing.T) {
 		}
 
 		t.Fatalf("Read([]T{}) blocked for > %v; it should return promptly", wait)
+	}
+}
+
+// A subscriber parked in Read() with no writes must wake when its context is canceled.
+func TestSubscriberReadWakesOnContextCancel(t *testing.T) {
+	stream := ringbuf.New[int](100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sub := stream.Subscribe(ctx, nil)
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		n, err := sub.Read(make([]int, 1))
+		done <- result{n: n, err: err}
+	}()
+
+	time.Sleep(50 * time.Millisecond) // Let the reader park in cond.Wait().
+	cancel()
+
+	select {
+	case r := <-done:
+		if r.n != 0 {
+			t.Fatalf("expected n=0, got %d", r.n)
+		}
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", r.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not wake on context cancellation")
+	}
+}
+
+// A subscriber parked in Read() must wake when its context deadline expires.
+func TestSubscriberReadWakesOnContextDeadline(t *testing.T) {
+	stream := ringbuf.New[int](100)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	sub := stream.Subscribe(ctx, nil)
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		n, err := sub.Read(make([]int, 1))
+		done <- result{n: n, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.n != 0 {
+			t.Fatalf("expected n=0, got %d", r.n)
+		}
+		if !errors.Is(r.err, context.DeadlineExceeded) {
+			t.Fatalf("expected context.DeadlineExceeded, got %v", r.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not wake on context deadline")
+	}
+}
+
+// Read() must return immediately when the context is already canceled at Subscribe time.
+func TestSubscriberReadAlreadyCanceledContext(t *testing.T) {
+	stream := ringbuf.New[int](100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sub := stream.Subscribe(ctx, nil)
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		n, err := sub.Read(make([]int, 1))
+		done <- result{n: n, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.n != 0 {
+			t.Fatalf("expected n=0, got %d", r.n)
+		}
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", r.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not return for an already-canceled context")
+	}
+}
+
+// Regression: a Write must still wake a reader parked in Read().
+func TestSubscriberReadWakesOnWrite(t *testing.T) {
+	stream := ringbuf.New[int](100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub := stream.Subscribe(ctx, nil)
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		p := make([]int, 1)
+		n, err := sub.Read(p)
+		if n == 1 {
+			done <- result{n: p[0], err: err}
+			return
+		}
+		done <- result{n: n, err: err}
+	}()
+
+	time.Sleep(50 * time.Millisecond) // Let the reader park in cond.Wait().
+	stream.Write(42)
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("expected nil error, got %v", r.err)
+		}
+		if r.n != 42 {
+			t.Fatalf("expected item=42, got %d", r.n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not wake on Write")
+	}
+}
+
+// Regression: Close() must still wake a parked reader with end-of-stream.
+func TestSubscriberReadWakesOnClose(t *testing.T) {
+	stream := ringbuf.New[int](100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub := stream.Subscribe(ctx, nil)
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		n, err := sub.Read(make([]int, 1))
+		done <- result{n: n, err: err}
+	}()
+
+	time.Sleep(50 * time.Millisecond) // Let the reader park in cond.Wait().
+	stream.Close()
+
+	select {
+	case r := <-done:
+		if r.n != 0 {
+			t.Fatalf("expected n=0, got %d", r.n)
+		}
+		if !errors.Is(r.err, io.EOF) {
+			t.Fatalf("expected io.EOF, got %v", r.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not wake on Close")
 	}
 }

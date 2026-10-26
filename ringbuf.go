@@ -105,7 +105,7 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		startPos = 0
 	}
 
-	return &Subscriber[T]{
+	sub := &Subscriber[T]{
 		Name:          opts.Name,
 		rb:            rb,
 		pos:           startPos,
@@ -113,13 +113,23 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		maxLag:        maxBehind,
 		iterBatchSize: iterBatchSize,
 	}
+
+	// Wake a parked Read on ctx cancellation, since the Write hot path never will.
+	// The stop func is dropped on purpose; the callback lives until ctx is done.
+	context.AfterFunc(ctx, func() {
+		rb.mu.Lock()
+		rb.cond.Broadcast()
+		rb.mu.Unlock()
+	})
+
+	return sub
 }
 
 // Write inserts items into the ring buffer and wakes up all waiting subscribers to read them.
 // This method is not concurrent safe, the caller must synchronize calls to Write() and Close().
 //
-// Subscribers can block waiting for new data. If the writer is idle, call Write() with zero items
-// to wake subscribers so they can observe context cancellation.
+// Subscribers can block waiting for new data. An idle writer does not need to keep writing:
+// a subscribed context that is canceled wakes its parked reader on its own.
 //
 // NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
 // MaxLag, it will be dropped with ErrTooSlow on the next Read() call. Keep the batch reasonable
