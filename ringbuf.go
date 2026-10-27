@@ -87,9 +87,10 @@ type SubscribeOpts struct {
 	IterBatchSize uint
 
 	// WakeOnCancel wakes a parked Read() when the subscriber context is canceled.
-	// Off by default: it costs one context.AfterFunc goroutine per subscriber,
-	// parked until ctx is done. Only needed when writes can be idle a long time —
-	// otherwise the next Write() broadcast wakes canceled readers anyway.
+	// Off by default: it costs one parked context.AfterFunc goroutine per subscriber
+	// and ~12x slower Subscribe (measured ~566 ns vs ~46 ns; see README for details).
+	// Only needed when writes can be idle a long time; otherwise the next Write()
+	// broadcast wakes canceled readers anyway.
 	WakeOnCancel bool
 }
 

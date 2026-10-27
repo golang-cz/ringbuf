@@ -237,6 +237,32 @@ sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 })
 ```
 
+### Waking Parked Readers on Context Cancellation
+
+A `Subscriber` parked in `Read()` sleeps until the next `Write()`/`Close()` broadcast.
+Context cancellation is only observed when a broadcast wakes it up: with an idle writer,
+a canceled subscriber stays parked -- its `Read()` does not return until the next `Write()`.
+
+`WakeOnCancel` opts into an immediate wake:
+
+```go
+sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+	WakeOnCancel: true, // Wake parked Read() when ctx is canceled
+})
+```
+
+Measured tradeoff (Apple M4 Pro, `BenchmarkSubscribe`):
+
+| `WakeOnCancel` | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| off (default) | ~46 | 176 | 3 |
+| on | ~566 | 696 | 9 |
+
+The cost is paid once per `Subscribe()` (plus one parked goroutine per subscriber, until
+ctx is done); the `Write()` hot path is unchanged either way. Leave it off when writes are
+continuous -- the next broadcast observes the cancel anyway. Turn it on when writes can be
+idle a long time and parked readers must exit promptly.
+
 ### Reconnection Logic
 
 The `Seek()` method allows subscribers to fast-forward to a specific position efficiently without locking
