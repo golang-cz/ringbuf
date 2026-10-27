@@ -85,6 +85,12 @@ type SubscribeOpts struct {
 
 	// Number of items the Iter() iterator will batch read. If 0, the default value is 64.
 	IterBatchSize uint
+
+	// WakeOnCancel wakes a parked Read() when the subscriber context is canceled.
+	// Off by default: it costs one context.AfterFunc goroutine per subscriber,
+	// parked until ctx is done. Only needed when writes can be idle a long time —
+	// otherwise the next Write() broadcast wakes canceled readers anyway.
+	WakeOnCancel bool
 }
 
 // Subscribe creates a new reader starting from the given position.
@@ -114,13 +120,15 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 		iterBatchSize: iterBatchSize,
 	}
 
-	// Wake a parked Read on ctx cancellation, since the Write hot path never will.
-	// The stop func is dropped on purpose; the callback lives until ctx is done.
-	context.AfterFunc(ctx, func() {
-		rb.mu.Lock()
-		rb.cond.Broadcast()
-		rb.mu.Unlock()
-	})
+	if opts.WakeOnCancel && ctx.Done() != nil {
+		// Wake a parked Read on ctx cancellation, since the Write hot path never will.
+		// The stop func is dropped on purpose; the callback lives until ctx is done.
+		context.AfterFunc(ctx, func() {
+			rb.mu.Lock()
+			rb.cond.Broadcast()
+			rb.mu.Unlock()
+		})
+	}
 
 	return sub
 }
@@ -128,8 +136,9 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 // Write inserts items into the ring buffer and wakes up all waiting subscribers to read them.
 // This method is not concurrent safe, the caller must synchronize calls to Write() and Close().
 //
-// Subscribers can block waiting for new data. An idle writer does not need to keep writing:
-// a subscribed context that is canceled wakes its parked reader on its own.
+// Subscribers can block waiting for new data. Unless SubscribeOpts.WakeOnCancel is set, a
+// canceled reader only observes cancellation on the next broadcast, so an idle writer should
+// occasionally call Write() with zero items to drop canceled subscribers.
 //
 // NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
 // MaxLag, it will be dropped with ErrTooSlow on the next Read() call. Keep the batch reasonable

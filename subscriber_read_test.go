@@ -115,7 +115,7 @@ func TestSubscriberReadWakesOnContextCancel(t *testing.T) {
 	stream := ringbuf.New[int](100)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sub := stream.Subscribe(ctx, nil)
+	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{WakeOnCancel: true})
 
 	type result struct {
 		n   int
@@ -150,7 +150,7 @@ func TestSubscriberReadWakesOnContextDeadline(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	sub := stream.Subscribe(ctx, nil)
+	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{WakeOnCancel: true})
 
 	type result struct {
 		n   int
@@ -182,7 +182,7 @@ func TestSubscriberReadAlreadyCanceledContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	sub := stream.Subscribe(ctx, nil)
+	sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{WakeOnCancel: true})
 
 	type result struct {
 		n   int
@@ -205,6 +205,60 @@ func TestSubscriberReadAlreadyCanceledContext(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Read did not return for an already-canceled context")
+	}
+}
+
+// Without SubscribeOpts.WakeOnCancel, a canceled reader must stay parked until the next broadcast.
+func TestSubscriberReadDoesNotWakeOnContextCancelByDefault(t *testing.T) {
+	stream := ringbuf.New[int](100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub := stream.Subscribe(ctx, nil)
+
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		p := make([]int, 1)
+		n, err := sub.Read(p)
+		if n == 1 {
+			done <- result{n: p[0], err: err}
+			return
+		}
+		done <- result{n: n, err: err}
+	}()
+
+	time.Sleep(50 * time.Millisecond) // Let the reader park in cond.Wait().
+	cancel()
+
+	select {
+	case r := <-done:
+		t.Fatalf("Read returned %+v before any Write; default Subscribe must not wake on ctx cancel", r)
+	case <-time.After(100 * time.Millisecond):
+		// Still parked, as expected.
+	}
+
+	stream.Write(42)
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("expected nil error after Write, got %v", r.err)
+		}
+		if r.n != 42 {
+			t.Fatalf("expected item=42, got %d", r.n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not wake on Write")
+	}
+
+	// The canceled context is observed on the next Read, once no data is left.
+	if n, err := sub.Read(make([]int, 1)); n != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected (0, context.Canceled), got (%d, %v)", n, err)
 	}
 }
 

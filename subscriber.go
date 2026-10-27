@@ -34,7 +34,7 @@ type Subscriber[T any] struct {
 // If no new items are available, Read() will block until:
 // - the next Write() call,
 // - the ring buffer is closed (end of stream), or
-// - the subscriber context ends.
+// - the subscriber context ends (checked on a broadcast, or immediately with SubscribeOpts.WakeOnCancel).
 //
 // Example usage:
 //
