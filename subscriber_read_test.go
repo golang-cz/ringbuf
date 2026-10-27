@@ -12,6 +12,14 @@ import (
 	"github.com/golang-cz/ringbuf"
 )
 
+// setReaperInterval makes the WakeOnCancel reaper tick fast, so opted-in tests stay quick.
+func setReaperInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := ringbuf.StreamReaperInterval
+	ringbuf.StreamReaperInterval = d
+	t.Cleanup(func() { ringbuf.StreamReaperInterval = prev })
+}
+
 func TestSubscriberRead(t *testing.T) {
 	stream := ringbuf.New[*Data](100)
 
@@ -112,6 +120,8 @@ func TestSubscriberReadZeroLengthSliceDoesNotBlock(t *testing.T) {
 
 // A subscriber parked in Read() with no writes must wake when its context is canceled.
 func TestSubscriberReadWakesOnContextCancel(t *testing.T) {
+	setReaperInterval(t, 5*time.Millisecond)
+
 	stream := ringbuf.New[int](100)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -146,6 +156,8 @@ func TestSubscriberReadWakesOnContextCancel(t *testing.T) {
 
 // A subscriber parked in Read() must wake when its context deadline expires.
 func TestSubscriberReadWakesOnContextDeadline(t *testing.T) {
+	setReaperInterval(t, 5*time.Millisecond)
+
 	stream := ringbuf.New[int](100)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -178,6 +190,8 @@ func TestSubscriberReadWakesOnContextDeadline(t *testing.T) {
 
 // Read() must return immediately when the context is already canceled at Subscribe time.
 func TestSubscriberReadAlreadyCanceledContext(t *testing.T) {
+	setReaperInterval(t, 5*time.Millisecond)
+
 	stream := ringbuf.New[int](100)
 
 	ctx, cancel := context.WithCancel(context.Background())

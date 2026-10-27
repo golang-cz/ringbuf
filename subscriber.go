@@ -8,6 +8,7 @@ import (
 	"iter"
 	"math"
 	"sort"
+	"sync"
 )
 
 var (
@@ -25,6 +26,10 @@ type Subscriber[T any] struct {
 	ctx           context.Context
 	iterBatchSize uint
 	iterErr       error
+
+	// optedIn records whether this subscriber registered with the shared WakeOnCancel reaper.
+	optedIn     bool
+	releaseOnce sync.Once
 }
 
 // Read reads up to len(p) items into p and returns n, the number of items copied.
@@ -34,7 +39,7 @@ type Subscriber[T any] struct {
 // If no new items are available, Read() will block until:
 // - the next Write() call,
 // - the ring buffer is closed (end of stream), or
-// - the subscriber context ends (checked on a broadcast, or immediately with SubscribeOpts.WakeOnCancel).
+// - the subscriber context ends (checked on a broadcast, or within StreamReaperInterval with SubscribeOpts.WakeOnCancel).
 //
 // Example usage:
 //
@@ -66,6 +71,15 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 		return 0, nil
 	}
 
+	n, err := s.read(p)
+	if err != nil {
+		s.release()
+	}
+	return n, err
+}
+
+// read is the blocking read loop behind Read(). Every error it returns is terminal.
+func (s *Subscriber[T]) read(p []T) (int, error) {
 	var writePos uint64
 	for {
 		writePos = s.rb.writePos.Load()
@@ -111,6 +125,29 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 		s.rb.cond.Wait()
 		s.rb.mu.Unlock()
 	}
+}
+
+// Close releases the subscriber's WakeOnCancel registration with the ring buffer.
+//
+// It is idempotent and safe to call after Read() returns a terminal error, or more than once.
+// Callers that stop reading before a terminal error should call Close(), so the ring buffer can
+// stop its reaper goroutine. Read() stays usable afterwards, but no longer wakes on ctx cancel.
+func (s *Subscriber[T]) Close() error {
+	s.release()
+	return nil
+}
+
+// release drops the shared reaper registration once. A no-op for subscribers that did not opt in.
+func (s *Subscriber[T]) release() {
+	if !s.optedIn {
+		return
+	}
+
+	s.releaseOnce.Do(func() {
+		if s.rb.numOptedIn.Add(-1) == 0 {
+			s.rb.stopReaper()
+		}
+	})
 }
 
 // readAvailable copies up to len(items) buffered items in [pos, writePos) into items and advances s.pos.

@@ -5,7 +5,15 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// StreamReaperInterval is how often the WakeOnCancel reaper broadcasts, waking parked
+// subscribers so they can observe context cancellation while the writer is idle.
+//
+// It bounds how long a canceled subscriber can stay parked. The tick runs only while at
+// least one subscriber opted into SubscribeOpts.WakeOnCancel. Values <= 0 disable the ticks.
+var StreamReaperInterval = 250 * time.Millisecond
 
 // New creates a ring buffer for items of type T with the given buffer size.
 //
@@ -50,6 +58,13 @@ type RingBuffer[T any] struct {
 	// Synchronization primitives for waking up subscribers waiting for new data.
 	mu   sync.Mutex
 	cond *sync.Cond
+
+	// Shared WakeOnCancel reaper: one goroutine per ring buffer, running only while at least
+	// one subscriber opted into SubscribeOpts.WakeOnCancel.
+	reaperMu     sync.Mutex
+	reaperCancel chan struct{} // Closed to stop the reaper goroutine. nil when not running.
+	reaperDone   chan struct{} // Closed by the reaper goroutine when it exits.
+	numOptedIn   atomic.Int64  // Opted-in subscribers that have not released the reaper yet.
 }
 
 // SubscribeOpts is a set of options for subscribing to a ring buffer.
@@ -87,8 +102,8 @@ type SubscribeOpts struct {
 	IterBatchSize uint
 
 	// WakeOnCancel wakes a parked Read() when the subscriber context is canceled.
-	// Off by default: it costs one parked context.AfterFunc goroutine per subscriber
-	// and ~12x slower Subscribe (measured ~566 ns vs ~46 ns; see README for details).
+	// Off by default: it starts one shared reaper goroutine per ring buffer that wakes
+	// parked readers every StreamReaperInterval (measured ~84 ns vs ~55 ns; see README).
 	// Only needed when writes can be idle a long time; otherwise the next Write()
 	// broadcast wakes canceled readers anyway.
 	WakeOnCancel bool
@@ -122,16 +137,67 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 	}
 
 	if opts.WakeOnCancel && ctx.Done() != nil {
-		// Wake a parked Read on ctx cancellation, since the Write hot path never will.
-		// The stop func is dropped on purpose; the callback lives until ctx is done.
-		context.AfterFunc(ctx, func() {
-			rb.mu.Lock()
-			rb.cond.Broadcast()
-			rb.mu.Unlock()
-		})
+		// Count the subscriber before starting the reaper, so a concurrent release can't
+		// stop a reaper that the subscriber still depends on.
+		sub.optedIn = true
+		rb.numOptedIn.Add(1)
+		rb.startReaper()
 	}
 
 	return sub
+}
+
+// startReaper starts the shared WakeOnCancel reaper goroutine if it isn't running.
+func (rb *RingBuffer[T]) startReaper() {
+	rb.reaperMu.Lock()
+	defer rb.reaperMu.Unlock()
+
+	if rb.reaperCancel != nil {
+		return
+	}
+
+	rb.reaperCancel = make(chan struct{})
+	rb.reaperDone = make(chan struct{})
+	go rb.reap(rb.reaperCancel, rb.reaperDone)
+}
+
+// stopReaper stops the reaper goroutine if no opted-in subscriber is left.
+func (rb *RingBuffer[T]) stopReaper() {
+	rb.reaperMu.Lock()
+	cancel, done := rb.reaperCancel, rb.reaperDone
+	if cancel == nil || rb.numOptedIn.Load() > 0 {
+		rb.reaperMu.Unlock()
+		return
+	}
+	rb.reaperCancel, rb.reaperDone = nil, nil
+	rb.reaperMu.Unlock()
+
+	close(cancel)
+	<-done
+}
+
+// reap wakes parked readers on a ticker, so canceled ones observe ctx.Done() during writer idle.
+func (rb *RingBuffer[T]) reap(cancel, done chan struct{}) {
+	defer close(done)
+
+	if StreamReaperInterval <= 0 {
+		<-cancel
+		return
+	}
+
+	ticker := time.NewTicker(StreamReaperInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-cancel:
+			return
+		case <-ticker.C:
+			rb.mu.Lock()
+			rb.cond.Broadcast()
+			rb.mu.Unlock()
+		}
+	}
 }
 
 // Write inserts items into the ring buffer and wakes up all waiting subscribers to read them.
@@ -139,7 +205,8 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 //
 // Subscribers can block waiting for new data. Unless SubscribeOpts.WakeOnCancel is set, a
 // canceled reader only observes cancellation on the next broadcast, so an idle writer should
-// occasionally call Write() with zero items to drop canceled subscribers.
+// occasionally call Write() with zero items to drop canceled subscribers. Opted-in readers are
+// woken by the shared reaper instead, so this applies to the default path only.
 //
 // NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
 // MaxLag, it will be dropped with ErrTooSlow on the next Read() call. Keep the batch reasonable
@@ -155,10 +222,13 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 		// writePos overflowed, increment the epoch.
 		rb.writeEpoch.Add(1)
 	}
+	rb.mu.Lock()
 	rb.writePos.Store(writePos)
 
 	// Wake up all subscribers.
+	// Hold mu so a broadcast can't land between a reader's check and its park.
 	rb.cond.Broadcast()
+	rb.mu.Unlock()
 }
 
 // Close signals the end of the stream and wakes up all waiting subscribers.
@@ -171,8 +241,10 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 // the writer must stop producing new data. Writing new data later results in
 // undefined behavior. Calling Close() twice will result in a panic.
 func (rb *RingBuffer[T]) Close() {
+	rb.mu.Lock()
 	close(rb.closed)
 	rb.cond.Broadcast()
+	rb.mu.Unlock()
 }
 
 func (rb *RingBuffer[T]) Size() uint64 {

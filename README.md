@@ -243,7 +243,7 @@ A `Subscriber` parked in `Read()` sleeps until the next `Write()`/`Close()` broa
 Context cancellation is only observed when a broadcast wakes it up: with an idle writer,
 a canceled subscriber stays parked -- its `Read()` does not return until the next `Write()`.
 
-`WakeOnCancel` opts into an immediate wake:
+`WakeOnCancel` opts into a periodic wake:
 
 ```go
 sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
@@ -251,17 +251,24 @@ sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 })
 ```
 
-Measured tradeoff (Apple M4 Pro, `BenchmarkSubscribe`):
+The first opted-in subscriber starts one shared reaper goroutine per `RingBuffer`, which
+broadcasts every `StreamReaperInterval` (250 ms by default). A canceled reader therefore
+exits within one interval, no matter how many subscribers opted in. The reaper stops when
+the last opted-in subscriber is done -- either `Read()` returned a terminal error, or
+`Subscriber.Close()` was called.
+
+Measured tradeoff (Apple M4 Pro, Go 1.27, `BenchmarkSubscribe`):
 
 | `WakeOnCancel` | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| off (default) | ~46 | 176 | 3 |
-| on | ~566 | 696 | 9 |
+| off (default) | ~55 | 192 | 3 |
+| on | ~84 | 304 | 4 |
 
-The cost is paid once per `Subscribe()` (plus one parked goroutine per subscriber, until
-ctx is done); the `Write()` hot path is unchanged either way. Leave it off when writes are
-continuous -- the next broadcast observes the cancel anyway. Turn it on when writes can be
-idle a long time and parked readers must exit promptly.
+The cost is paid once per `Subscribe()`: `ctx.Done()` allocates its channel lazily, and the
+first opted-in subscriber starts the reaper goroutine. The `Write()` hot path is unchanged
+either way. Leave it off when writes are continuous -- the next broadcast observes the
+cancel anyway. Turn it on when writes can be idle a long time and parked readers must exit
+promptly.
 
 ### Reconnection Logic
 
