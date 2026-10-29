@@ -23,7 +23,7 @@ import (
 
 var (
 	flagSubscriberCounts = &SliceFlag[int]{
-		Values: []int{1, 10, 100, 1_000, 10_000},
+		Values: []int{1, 10, 100, 1_000, 10_000, 100_000},
 		Parse: func(value string) (int, error) {
 			value = strings.ReplaceAll(strings.TrimSpace(value), "_", "")
 			return strconv.Atoi(value)
