@@ -60,8 +60,6 @@ func BenchmarkWriteBatchThroughputNoReaders(b *testing.B) {
 // BenchmarkMultiWriterThroughput measures write throughput of multiple concurrent writers
 // writing into the same ring buffer, optionally with readers attached.
 func BenchmarkMultiWriterThroughput(b *testing.B) {
-	b.Skip("unskipped in PR 1 commit 2: requires concurrent-safe Write")
-
 	bufferSize := uint64(500_000)
 
 	for _, writers := range []int{2, 4, 8} {

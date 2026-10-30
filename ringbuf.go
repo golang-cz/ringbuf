@@ -3,9 +3,13 @@ package ringbuf
 import (
 	"cmp"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 )
+
+// ErrClosed is returned by Write() when the ring buffer has been closed.
+var ErrClosed = errors.New("ringbuf: buffer closed")
 
 // New creates a ring buffer for items of type T with the given buffer size.
 //
@@ -26,9 +30,9 @@ func New[T any](size uint64) *RingBuffer[T] {
 	return rb
 }
 
-// RingBuffer is a generic ring buffer that supports multiple concurrent subscribers
-// reading its data at their own pace. Write operations are not thread-safe and must
-// be synchronized by the caller.
+// RingBuffer is a generic ring buffer that supports multiple concurrent writers and
+// multiple concurrent subscribers reading its data at their own pace. See the
+// "Concurrency" section of the README for the guarantees and the caveats.
 type RingBuffer[T any] struct {
 	// Circular buffer storing the data items.
 	buf []T
@@ -116,7 +120,9 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 }
 
 // Write inserts items into the ring buffer and wakes up all waiting subscribers to read them.
-// This method is not concurrent safe, the caller must synchronize calls to Write() and Close().
+// It is safe to call Write() concurrently from multiple goroutines, and concurrently with Close().
+//
+// Write() returns ErrClosed if the ring buffer has been closed. No items are written in that case.
 //
 // Subscribers can block waiting for new data. If the writer is idle, call Write() with zero items
 // to wake subscribers so they can observe context cancellation.
@@ -124,7 +130,16 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 // NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
 // MaxLag, it will be dropped with ErrTooSlow on the next Read() call. Keep the batch reasonable
 // small, e.g. less than MaxLag and less than 50% of the buffer size to avoid subscriber errors.
-func (rb *RingBuffer[T]) Write(items ...T) {
+func (rb *RingBuffer[T]) Write(items ...T) error {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	select {
+	case <-rb.closed:
+		return ErrClosed
+	default:
+	}
+
 	pos := rb.writePos.Load()
 	for i, item := range items {
 		rb.buf[(pos+uint64(i))%rb.size] = item
@@ -137,8 +152,10 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 	}
 	rb.writePos.Store(writePos)
 
-	// Wake up all subscribers.
+	// Wake up all subscribers. Must happen under rb.mu, see sync.Cond contract.
 	rb.cond.Broadcast()
+
+	return nil
 }
 
 // Close signals the end of the stream and wakes up all waiting subscribers.
@@ -147,11 +164,17 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 // and then stop when errors.Is(err, io.EOF) (end of stream). New subscriptions are
 // still allowed after Close() and they will never block waiting for new data.
 //
-// Same as Write(), this method is not concurrent safe. After calling Close(),
-// the writer must stop producing new data. Writing new data later results in
-// undefined behavior. Calling Close() twice will result in a panic.
+// It is safe to call Close() concurrently with Write() and with subscribers. After Close()
+// returns, no more data lands in the buffer: subsequent Write() calls return ErrClosed.
+//
+// Calling Close() twice panics, same as closing a channel twice.
 func (rb *RingBuffer[T]) Close() {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
 	close(rb.closed)
+
+	// Wake up all subscribers. Must happen under rb.mu, see sync.Cond contract.
 	rb.cond.Broadcast()
 }
 
