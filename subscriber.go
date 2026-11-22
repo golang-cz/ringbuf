@@ -98,6 +98,8 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 		leader := s.rb.leader.CompareAndSwap(false, true)
 		if leader {
 			wake = s.rb.wake
+			// A notify loaded before the previous leader stepped down would wake this one at once, and all readers with it.
+			notify = nil
 		}
 
 		// Wait for new data, then retry.
