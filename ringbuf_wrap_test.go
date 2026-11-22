@@ -7,6 +7,7 @@ package ringbuf_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 
@@ -20,6 +21,10 @@ type wrapItem [16]uint64
 // middle of a Read() gets ErrTooSlow, and never torn or out-of-order items.
 func TestReadNeverReturnsOverwrittenData(t *testing.T) {
 	const size = 128
+
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs a writer running in parallel with the reader")
+	}
 
 	stream := ringbuf.New[wrapItem](size)
 
@@ -91,4 +96,7 @@ func TestReadNeverReturnsOverwrittenData(t *testing.T) {
 	}
 
 	t.Logf("%d clean reads, %d ErrTooSlow", reads, tooSlow)
+	if reads == 0 || tooSlow == 0 {
+		t.Fatalf("test didn't exercise both outcomes: %d clean reads, %d ErrTooSlow", reads, tooSlow)
+	}
 }

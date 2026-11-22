@@ -82,11 +82,12 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 		}
 
 		// Check for end of stream.
-		if writePos, err, ok := s.checkEnd(s.pos); ok {
+		if _, err, ok := s.checkEnd(s.pos); ok {
 			if err != nil {
 				return 0, err
 			}
-			return s.readAvailable(s.pos, writePos, p)
+			// Data landed before Close(): retry, so the drain goes through the lag check too.
+			continue
 		}
 
 		// Load notify before the election and the re-check, or a concurrent wake-up could be missed.
@@ -282,7 +283,11 @@ func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64, uint64) {
 	}
 
 	pos := minPos + uint64(lb)
-	if cmpAt(pos) != 0 || lapped {
+	match := cmpAt(pos) == 0
+	if lapped {
+		return false, 0, s.rb.writePos.Load()
+	}
+	if !match {
 		return false, 0, writePos
 	}
 	return true, pos, writePos

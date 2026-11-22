@@ -128,7 +128,7 @@ Known caveat: the discarded copy is an intentional unsynchronized read, so `go t
 
 - **Write path**: Mutex-protected, atomic cursor for readers (~9 ns/op uncontended)
 - **Read path**: Lock-free hot path with minimal synchronization when waiting for new data
-- **Memory**: No memory allocations during data reads (0 B/op)
+- **Memory**: No memory allocations during data reads (0 B/op on the hot path)
 - **Scalability**: Optimized for thousands of concurrent subscribers (1-100,000 in-memory readers)
 - **Latency**: Sub-microsecond read/write operations in common scenarios
 - **Write-throughput**: 250M+ writes/sec with batched writes on modern hardware, with 1,000 or 100,000 readers attached
