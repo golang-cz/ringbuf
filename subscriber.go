@@ -78,7 +78,7 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 
 		// Lock-free hot path.
 		if s.pos != writePos {
-			return s.readAvailable(s.pos, writePos, p), nil
+			return s.readAvailable(s.pos, writePos, p)
 		}
 
 		// Check for end of stream.
@@ -86,7 +86,7 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			return s.readAvailable(s.pos, writePos, p), nil
+			return s.readAvailable(s.pos, writePos, p)
 		}
 
 		// Load notify before the election and the re-check, or a concurrent wake-up could be missed.
@@ -118,10 +118,11 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 }
 
 // readAvailable copies up to len(items) buffered items in [pos, writePos) into items and advances s.pos.
-func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) int {
+// It returns ErrTooSlow, and no items, if the writer overwrote any of them during the copy.
+func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) (int, error) {
 	maxRead := min(uint64(len(items)), writePos-pos)
 	if maxRead == 0 {
-		return 0
+		return 0, nil
 	}
 
 	start := pos % s.rb.size
@@ -135,9 +136,15 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) in
 		n = copy(items, s.rb.buf[start:])
 		n += copy(items[n:], s.rb.buf[:end-s.rb.size])
 	}
+
+	if lag, ok := s.rb.intact(pos); !ok {
+		// Don't leave torn items behind in the caller's buffer.
+		clear(items[:n])
+		return 0, fmt.Errorf("subscriber[%v] fell behind (lag=%v, maxLag=%v): %w", s.Name, lag, s.maxLag, ErrTooSlow)
+	}
 	s.pos += uint64(n)
 
-	return n
+	return n, nil
 }
 
 // checkEnd checks whether the subscriber should stop due to context cancellation or stream closure.
@@ -252,17 +259,30 @@ func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64, uint64) {
 	}
 	minPos := writePos - window
 
+	// cmpAt never hands cmp an item the writer may have overwritten during the copy.
+	lapped := false
+	cmpAt := func(pos uint64) int {
+		item := s.rb.buf[pos%s.rb.size]
+		if _, ok := s.rb.intact(pos); !ok {
+			lapped = true
+			return 0
+		}
+		return cmp(item)
+	}
+
 	// lower-bound: the first "match candidate" (we still need to confirm exact match)
 	lb := sort.Search(int(window), func(i int) bool {
-		pos := minPos + uint64(i)
-		return cmp(s.rb.buf[pos%s.rb.size]) >= 0
+		return cmpAt(minPos+uint64(i)) >= 0
 	})
+	if lapped {
+		return false, 0, s.rb.writePos.Load()
+	}
 	if lb == int(window) {
 		return false, 0, writePos
 	}
 
 	pos := minPos + uint64(lb)
-	if cmp(s.rb.buf[pos%s.rb.size]) != 0 {
+	if cmpAt(pos) != 0 || lapped {
 		return false, 0, writePos
 	}
 	return true, pos, writePos

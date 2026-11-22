@@ -45,6 +45,10 @@ type RingBuffer[T any] struct {
 	// Global write cursor (next position to write).
 	writePos atomic.Uint64
 
+	// End position of the in-flight write, published before its slots are filled.
+	// Lets subscribers detect that the writer lapped them in the middle of a copy.
+	writeHead atomic.Uint64
+
 	// Increments when writePos overflows (wraps around).
 	// Used to detect if subscriber can read historical data from end of the buffer.
 	writeEpoch atomic.Uint64
@@ -137,8 +141,8 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 //
 // Write() returns ErrClosed if the ring buffer has been closed. No items are written in that case.
 //
-// Subscribers can block waiting for new data. If the writer is idle, call Write() with zero items
-// to wake subscribers so they can observe context cancellation.
+// Subscribers can block waiting for new data. They observe context cancellation on their own,
+// the writer doesn't need to wake them.
 //
 // NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
 // MaxLag, it will be dropped with ErrTooSlow on the next Read() call. Keep the batch reasonable
@@ -154,6 +158,7 @@ func (rb *RingBuffer[T]) Write(items ...T) error {
 	}
 
 	pos := rb.writePos.Load()
+	rb.writeHead.Store(pos + uint64(len(items)))
 	for i, item := range items {
 		rb.buf[(pos+uint64(i))%rb.size] = item
 	}
@@ -199,6 +204,13 @@ func (rb *RingBuffer[T]) Close() {
 
 	// Parked subscribers select on rb.closed, no extra wake-up needed.
 	close(rb.closed)
+}
+
+// intact reports whether slots copied from pos onwards are still the ones written at pos,
+// i.e. no write has reserved slots a full lap ahead. It must be called after the copy.
+func (rb *RingBuffer[T]) intact(pos uint64) (lag uint64, ok bool) {
+	lag = rb.writeHead.Load() - pos
+	return lag, lag <= rb.size
 }
 
 func (rb *RingBuffer[T]) Size() uint64 {

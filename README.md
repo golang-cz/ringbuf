@@ -120,7 +120,9 @@ Any number of writers can write to the same ring buffer while any number of subs
 - `Write()` returns `ringbuf.ErrClosed` after `Close()`. Once `Close()` returns, no more data lands in the buffer.
 - `Close()` twice panics, same as closing a channel twice.
 
-Known caveat: subscribers copy data without taking the buffer lock. A subscriber that lags behind the writer and reads across a wrap-around can observe a torn slot. This is pre-existing, best-effort behavior by design; keep `MaxLag` comfortably below the buffer size, which the defaults do.
+Subscribers copy data without taking a lock. If a writer laps a subscriber in the middle of a copy, that `Read()` discards the copy and returns `ErrTooSlow`. It never returns overwritten or torn items. `Seek()` falls back to the tail in the same situation.
+
+Known caveat: the discarded copy is an intentional unsynchronized read, so `go test -race` reports it when a subscriber gets lapped mid-copy.
 
 ## Performance Characteristics
 
@@ -129,7 +131,7 @@ Known caveat: subscribers copy data without taking the buffer lock. A subscriber
 - **Memory**: No memory allocations during data reads (0 B/op)
 - **Scalability**: Optimized for thousands of concurrent subscribers (1-100,000 in-memory readers)
 - **Latency**: Sub-microsecond read/write operations in common scenarios
-- **Write-throughput**: 300M+ writes/sec with batched writes on modern hardware, the same with 1 or 100,000 readers attached
+- **Write-throughput**: 250M+ writes/sec with batched writes on modern hardware, with 1,000 or 100,000 readers attached
 - **Writer vs. readers**: Writers share no lock with readers. A write hands the wake-up to one parked reader, which wakes the rest
 - **Read-throughput**: 200B+ in-memory reads/sec on modern hardware
 

@@ -147,15 +147,35 @@ func TestCloseWriteRace(t *testing.T) {
 	for range 1000 {
 		stream := ringbuf.New[uint64](1000)
 
+		start := make(chan struct{})
 		errCh := make(chan error, 1)
 		go func() {
+			<-start
 			errCh <- stream.Write(1, 2, 3)
 		}()
 
+		close(start)
 		stream.Close()
 
-		if err := <-errCh; err != nil && !errors.Is(err, ringbuf.ErrClosed) {
+		err := <-errCh
+		if err != nil && !errors.Is(err, ringbuf.ErrClosed) {
 			t.Fatalf("Write() racing Close() = %v, want nil or %v", err, ringbuf.ErrClosed)
+		}
+
+		// A landed write is fully readable, a rejected one leaves nothing behind.
+		var want []uint64
+		if err == nil {
+			want = []uint64{1, 2, 3}
+		}
+
+		sub := stream.Subscribe(context.Background(), &ringbuf.SubscribeOpts{StartBehind: 3, MaxLag: 10})
+
+		var got []uint64
+		for item := range sub.Iter() {
+			got = append(got, item)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("Write() = %v, subscriber read %v, want %v", err, got, want)
 		}
 	}
 }

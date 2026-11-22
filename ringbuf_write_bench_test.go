@@ -2,8 +2,10 @@ package ringbuf_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,21 +72,29 @@ func BenchmarkMultiWriterThroughput(b *testing.B) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
-				var wgReaders sync.WaitGroup
+				var wgReady, wgReaders sync.WaitGroup
+				wgReady.Add(readers)
 				wgReaders.Add(readers)
+
+				var fellBehind atomic.Int64
 
 				for range readers {
 					sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{MaxLag: bufferSize * 9 / 10})
 
 					go func() {
 						defer wgReaders.Done()
+						wgReady.Done()
 						for range sub.Iter() {
+						}
+						if errors.Is(sub.Err(), ringbuf.ErrTooSlow) {
+							fellBehind.Add(1)
 						}
 					}()
 				}
+				wgReady.Wait()
 
-				// Wait for all reader goroutines to be started.
-				time.Sleep(time.Duration(readers) * time.Millisecond)
+				// Split b.N across the writers, so ns/op stays the cost of one Write().
+				perWriter := max(b.N/writers, 1)
 
 				b.ResetTimer()
 
@@ -95,7 +105,7 @@ func BenchmarkMultiWriterThroughput(b *testing.B) {
 				for w := range writers {
 					go func() {
 						defer wgWriters.Done()
-						for i := 0; i < b.N; i++ {
+						for range perWriter {
 							stream.Write(uint64(w))
 						}
 					}()
@@ -104,11 +114,13 @@ func BenchmarkMultiWriterThroughput(b *testing.B) {
 				elapsed := time.Since(t0)
 				b.StopTimer()
 
-				b.ReportMetric(float64(writers*b.N)/elapsed.Seconds(), "writes/s")
+				b.ReportMetric(float64(writers*perWriter)/elapsed.Seconds(), "writes/s")
 
 				cancel()
 				stream.Close()
 				wgReaders.Wait()
+
+				b.ReportMetric(float64(fellBehind.Load()), "errors")
 			})
 		}
 	}
