@@ -123,12 +123,13 @@ Known caveat: subscribers copy data without taking the buffer lock. A subscriber
 
 ## Performance Characteristics
 
-- **Write path**: Mutex-protected, atomic cursor for readers (~5 ns/op)
+- **Write path**: Mutex-protected, atomic cursor for readers (~11 ns/op uncontended)
 - **Read path**: Lock-free hot path with minimal synchronization when waiting for new data
 - **Memory**: No memory allocations during data reads (0 B/op)
 - **Scalability**: Optimized for thousands of concurrent subscribers (1-100,000 in-memory readers)
 - **Latency**: Sub-microsecond read/write operations in common scenarios
-- **Write-throughput**: 200M+ writes/sec on modern hardware
+- **Write-throughput**: 190M+ writes/sec with batched writes on modern hardware
+- **Writer vs. readers**: The writer never waits for slow consumers. It shares a short mutex with readers parked waiting for data, so batch your writes when thousands of readers are attached
 - **Read-throughput**: 200B+ in-memory reads/sec on modern hardware
 
 ## Benchmarks
