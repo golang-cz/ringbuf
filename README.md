@@ -25,6 +25,7 @@
 ## Features
 
 - **Multi-writer, multi-reader fan-out** — N producers and thousands of independent consumers
+- **Readers never slow down the writer** — 100,000 fast or slow readers cost the writer nothing but shared CPU time; slow readers are dropped with an error
 - **Lossy, best-effort delivery** — optimized for real-time streams where readers may fall behind
 - **Lock-free read hot paths** — atomic cursor loads for ultra-low latency
 - **Zero-allocation reads** — `io.Reader`-style API with caller-managed buffers
@@ -123,13 +124,13 @@ Known caveat: subscribers copy data without taking the buffer lock. A subscriber
 
 ## Performance Characteristics
 
-- **Write path**: Mutex-protected, atomic cursor for readers (~11 ns/op uncontended)
+- **Write path**: Mutex-protected, atomic cursor for readers (~9 ns/op uncontended)
 - **Read path**: Lock-free hot path with minimal synchronization when waiting for new data
 - **Memory**: No memory allocations during data reads (0 B/op)
 - **Scalability**: Optimized for thousands of concurrent subscribers (1-100,000 in-memory readers)
 - **Latency**: Sub-microsecond read/write operations in common scenarios
-- **Write-throughput**: 190M+ writes/sec with batched writes on modern hardware
-- **Writer vs. readers**: The writer never waits for slow consumers. It shares a short mutex with readers parked waiting for data, so batch your writes when thousands of readers are attached
+- **Write-throughput**: 300M+ writes/sec with batched writes on modern hardware, the same with 1 or 100,000 readers attached
+- **Writer vs. readers**: Writers share no lock with readers. A write hands the wake-up to one parked reader, which wakes the rest
 - **Read-throughput**: 200B+ in-memory reads/sec on modern hardware
 
 ## Benchmarks

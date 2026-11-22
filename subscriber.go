@@ -89,27 +89,31 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 			return s.readAvailable(s.pos, writePos, p), nil
 		}
 
-		// Acquire lock and double-check the position.
-		s.rb.mu.Lock()
+		// Load notify before the election and the re-check, or a concurrent wake-up could be missed.
+		notify := *s.rb.notify.Load()
 
-		writePos = s.rb.writePos.Load()
-		if s.pos != writePos {
-			s.rb.mu.Unlock()
-			return s.readAvailable(s.pos, writePos, p), nil
+		// Only the leader listens on wake; a nil channel never fires for the others.
+		var wake chan struct{}
+		leader := s.rb.leader.CompareAndSwap(false, true)
+		if leader {
+			wake = s.rb.wake
 		}
 
-		// Check for end of stream.
-		if writePos, err, ok := s.checkEnd(s.pos); ok {
-			s.rb.mu.Unlock()
-			if err != nil {
-				return 0, err
+		// Wait for new data, then retry.
+		if s.pos == s.rb.writePos.Load() {
+			select {
+			case <-notify:
+			case <-wake:
+			case <-s.ctx.Done():
+			case <-s.rb.closed:
 			}
-			return s.readAvailable(s.pos, writePos, p), nil
 		}
 
-		// Wait for new data. Will wake up and retry on broadcast signal.
-		s.rb.cond.Wait()
-		s.rb.mu.Unlock()
+		// A leader always wakes the rest when it steps down, so they elect a new one.
+		if leader {
+			s.rb.leader.Store(false)
+			s.rb.wakeAll()
+		}
 	}
 }
 

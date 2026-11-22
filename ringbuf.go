@@ -25,8 +25,10 @@ func New[T any](size uint64) *RingBuffer[T] {
 		buf:    make([]T, size),
 		size:   size,
 		closed: make(chan struct{}),
+		wake:   make(chan struct{}, 1),
 	}
-	rb.cond = sync.NewCond(&rb.mu)
+	notify := make(chan struct{})
+	rb.notify.Store(&notify)
 	return rb
 }
 
@@ -51,9 +53,20 @@ type RingBuffer[T any] struct {
 	// data will be available for reading.
 	closed chan struct{}
 
-	// Synchronization primitives for waking up subscribers waiting for new data.
-	mu   sync.Mutex
-	cond *sync.Cond
+	// Serializes writers and Close(). Subscribers never take it.
+	writeMu sync.Mutex
+
+	// Token asking the leader subscriber to wake the rest, so Write() stays O(1) in subscribers.
+	wake chan struct{}
+
+	// Closed and replaced to wake all parked subscribers.
+	notify atomic.Pointer[chan struct{}]
+
+	// Keeps the subscriber-written leader flag off the writer's cache line.
+	_ [64]byte
+
+	// Set while one parked subscriber (the leader) listens on wake; only it shares state with the writer.
+	leader atomic.Bool
 }
 
 // SubscribeOpts is a set of options for subscribing to a ring buffer.
@@ -131,11 +144,11 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 // MaxLag, it will be dropped with ErrTooSlow on the next Read() call. Keep the batch reasonable
 // small, e.g. less than MaxLag and less than 50% of the buffer size to avoid subscriber errors.
 func (rb *RingBuffer[T]) Write(items ...T) error {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+	rb.writeMu.Lock()
 
 	select {
 	case <-rb.closed:
+		rb.writeMu.Unlock()
 		return ErrClosed
 	default:
 	}
@@ -151,11 +164,23 @@ func (rb *RingBuffer[T]) Write(items ...T) error {
 		rb.writeEpoch.Add(1)
 	}
 	rb.writePos.Store(writePos)
+	rb.writeMu.Unlock()
 
-	// Wake up all subscribers. Must happen under rb.mu, see sync.Cond contract.
-	rb.cond.Broadcast()
+	// Hand the O(subscribers) wake-up to the leader subscriber; the writer never pays for it.
+	if rb.leader.Load() {
+		select {
+		case rb.wake <- struct{}{}:
+		default:
+		}
+	}
 
 	return nil
+}
+
+// wakeAll wakes every subscriber parked on the current notify channel.
+func (rb *RingBuffer[T]) wakeAll() {
+	next := make(chan struct{})
+	close(*rb.notify.Swap(&next))
 }
 
 // Close signals the end of the stream and wakes up all waiting subscribers.
@@ -169,13 +194,11 @@ func (rb *RingBuffer[T]) Write(items ...T) error {
 //
 // Calling Close() twice panics, same as closing a channel twice.
 func (rb *RingBuffer[T]) Close() {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+	rb.writeMu.Lock()
+	defer rb.writeMu.Unlock()
 
+	// Parked subscribers select on rb.closed, no extra wake-up needed.
 	close(rb.closed)
-
-	// Wake up all subscribers. Must happen under rb.mu, see sync.Cond contract.
-	rb.cond.Broadcast()
 }
 
 func (rb *RingBuffer[T]) Size() uint64 {
