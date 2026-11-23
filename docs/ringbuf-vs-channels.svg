@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 560" width="920" height="560" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second; Go channels fall to 20 messages per second and seconds of delay. Without slow subscribers, channels need 20 ms per message and 926 MB, ringbuf 0.1 microseconds and 8.6 MB.">
-<text x="40.0" y="28.0" font-size="16" font-weight="700" fill="#768390">1 in 10 subscribers is slow</text>
+<text x="40.0" y="28.0" font-size="16" font-weight="700" fill="#768390">When 1 in 10 subscribers is slow</text>
 <text x="40.0" y="47.0" font-size="12" fill="#768390">Slow = 10 msg/s, like a phone on a weak network. The writer sends 1,000 msg/s. Apple M4 Pro.</text>
 <text x="100.0" y="82.0" font-size="14" font-weight="600" fill="#768390">Throughput</text>
 <line x1="100" y1="216.0" x2="330" y2="216.0" stroke="#768390" stroke-opacity="0.25"/>
@@ -81,7 +81,7 @@
 <circle cx="790.0" cy="207.3" r="3" fill="#2da44e"/>
 <text x="800.0" y="187.3" font-size="12.5" font-weight="600" fill="#2da44e">ringbuf</text>
 <text x="800.0" y="202.3" font-size="11.5" fill="#2da44e">0.4 s</text>
-<text x="40.0" y="318.0" font-size="16" font-weight="700" fill="#768390">Nobody is slow</text>
+<text x="40.0" y="318.0" font-size="16" font-weight="700" fill="#768390">When every subscriber keeps up</text>
 <text x="40.0" y="337.0" font-size="12" fill="#768390">Cost per message for the writer, and memory for all buffers. 8-byte messages, 1,024 per buffer.</text>
 <text x="100.0" y="372.0" font-size="14" font-weight="600" fill="#768390">Writer time per message</text>
 <line x1="100" y1="506.0" x2="330" y2="506.0" stroke="#768390" stroke-opacity="0.25"/>

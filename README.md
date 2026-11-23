@@ -7,7 +7,9 @@
 
 **ringbuf** is a generic, concurrent, in-memory ring buffer. Any number of writers publish into one stream, and any number of subscribers consume it at their own pace. Think of it as channel fan-in and fan-out in a single type, built for live streams where delivery is best-effort.
 
-## Why ringbuf over Go Channels  <!-- omit in toc -->
+## More Efficient Fan-Out for Thousands of Subscribers  <!-- omit in toc -->
+
+![ringbuf against Go channels, streaming to 100,000 subscribers. 50 times the throughput when 1 in 10 subscribers is slow: 1,000 messages per second against 20. 140,000 times faster writes: 0.1 microseconds per message against 20 ms. 108 times less memory: 8.6 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
 
 - **The writer never blocks.** It never waits for a subscriber, however many there are and however slow they get.
 - **Slow subscribers can't hurt anyone.** A subscriber that falls too far behind gets `ErrTooSlow` and can rejoin. The writer and the other subscribers don't notice.
