@@ -18,13 +18,13 @@ Fan-out with Go channels works the other way around. Every reader needs its own 
 | | Go channels | ringbuf |
 |---|---|---|
 | **A reader gets slow** | Writer blocks until it catches up | Writer keeps its pace, reader gets `ErrTooSlow` |
-| **1,000 readers, 10 of them slow** | 1.2 ms per write | **28 ns** per write |
-| **100,000 readers** | 16 ms per write | **66 ns** per write |
-| **Data age at healthy readers, 10 of 1,000 slow** | 1.7 s and growing | **0.5 ms** |
+| **1,000 readers, 10 of them slow** | 1.2 ms per write | **23–28 ns** per write |
+| **100,000 readers** | 13–16 ms per write | **66–85 ns** per write |
+| **Data age at healthy readers, 10 of 1,000 slow** | Seconds, and rising | **0.3–0.5 ms** |
 | **Memory for 100,000 readers** | 926 MB | **8.6 MB** |
 | **Delivery** | Guaranteed, with backpressure | Best-effort |
 
-<sub>Apple M4 Pro. Every number comes from a benchmark in this repository, see [ringbuf vs. Go Channels](#ringbuf-vs-go-channels).</sub>
+<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. Every number comes from a benchmark in this repository, see [ringbuf vs. Go Channels](#ringbuf-vs-go-channels). The chart shows the M4 Pro run.</sub>
 
 ![Go channels vs. ringbuf: writer time per item and memory, from 1 to 100,000 readers](./docs/ringbuf-vs-channels.svg)
 
@@ -133,7 +133,9 @@ func main() {
 
 ## ringbuf vs. Go Channels
 
-Go channels are great for handing work to one consumer. Fan-out to many consumers is where they get expensive. Four benchmarks show where, and by how much. They ran on Apple M4 Pro (12 cores), with `uint64` items and a capacity of 1,024 on both sides. All of them live in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
+Go channels are great for handing work to one consumer. Fan-out to many consumers is where they get expensive. Four benchmarks show where, and by how much. They use `uint64` items and a capacity of 1,024 on both sides. Channels send one item at a time, which is the usual way to write a fan-out.
+
+The tables show an Apple M4 Pro (12 cores). A second run on an Apple M5 (10 cores) confirmed the shape: memory matched exactly, ringbuf matched within noise, and channels were 15–45% faster there. Where the two machines disagree, the text says so. All of them live in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
 
 ### Slow Readers
 
@@ -142,8 +144,8 @@ This is the case ringbuf was built for. 1,000 readers are attached, and 10 of th
 | | Writer, per item | Writes/s |
 |---|---:|---:|
 | Channels, blocking send | 1.2 ms | ~800 |
-| Channels, drop when full | 170 µs | ~5,900 |
-| ringbuf | 28 ns | ~36,000,000 |
+| Channels, drop when full | 110–170 µs | ~5,900–9,000 |
+| ringbuf | 23–28 ns | ~36,000,000–43,000,000 |
 
 - With blocking sends, 10 slow readers throttle the writer and the 990 healthy readers with it.
 - Dropping items for full channels unblocks the writer, but it still walks all 1,000 channels for every item.
@@ -174,60 +176,65 @@ The benchmarks stop at 10,000 readers by default. Add `-fanout_readers=100_000` 
 
 At 1,000,000 readers ringbuf holds 86 MB and a write takes about 0.4 µs. A million goroutines overload the Go scheduler at that point, and end-to-end delivery slows down sharply. Channels would need over 9 GB for their buffers alone, so that run has no channel column.
 
+```
+$ go test -bench='BenchmarkFanOut(Write|Memory)/ringbuf' -run=^$ -fanout_readers=1_000_000 .
+```
+
 ### Writer Cost
 
 How long is the writer busy publishing one item to N live readers? This is producer-side cost only. What readers see is measured in the next section.
 
 | Readers | Channels, blocking send | Channels, drop when full | ringbuf |
 |---:|---:|---:|---:|
-| 1 | 23 ns | 7 ns | 22–41 ns |
+| 1 | 23 ns | 7–18 ns | 22–107 ns |
 | 100 | 19 µs | 16 µs | 22 ns |
 | 1,000 | 173 µs | 172 µs | 25 ns |
 | 10,000 | 1.3 ms | 1.3 ms | 27 ns |
-| 100,000 | 16 ms | 16 ms | 66 ns |
+| 100,000 | 13–16 ms | 13–16 ms | 66–85 ns |
 
 - Channels cost one send per reader, so the writer slows down linearly with the audience.
 - Dropping items for full readers doesn't help. The writer still visits every channel.
 - ringbuf does one write and wakes one reader. That reader wakes the rest.
-- With a single reader, a plain channel is as fast or faster. ringbuf pays off from fan-out.
+- With a single reader, a plain channel is faster, by up to 4x on one of our machines. ringbuf pays off from fan-out.
 
-The writer runs at full speed in this benchmark. Slow ringbuf readers get dropped and rejoin, and the drop variant of channels discards items. The single-reader row varies the most between runs.
+The writer runs at full speed in this benchmark. Slow ringbuf readers get dropped and rejoin, and the drop variant of channels discards items. The single-reader and 100,000-reader rows are ranges over both machines.
 
 ```
-$ go test -bench=BenchmarkFanOutWrite -run=^$ -count=3 .
+$ go test -bench=BenchmarkFanOutWrite -run=^$ -count=3 -fanout_readers=1,100,1_000,10_000,100_000 .
 ```
 
 ### Reader Latency
 
 What do the readers see? One writer publishes 1,000 items per second. 1% of the readers are slow: they need 10 ms per item, so they can never keep up. Latency is the age of an item when a healthy reader receives it, counted from the moment it was due to be written. A writer that falls behind shows up as latency too.
 
-Median latency, with the 99th percentile in brackets:
+Median latency at healthy readers, as a range over both machines:
 
 | Readers | Channels, blocking send | Channels, drop when full | ringbuf |
 |---:|---:|---:|---:|
-| 100 | 1.7 s (2.6 s) | 0.06 ms (5 ms) | 0.11 ms (1 ms) |
-| 1,000 | 1.7 s (2.6 s) | 0.29 ms (0.8 ms) | 0.48 ms (2 ms) |
-| 10,000 | 2.8 s (3.7 s) | 17 ms (52 ms) | 7.5 ms (18 ms) |
-| 100,000 | 3.0 s (4.0 s) | 2.9 s (3.9 s) | 140 ms (377 ms) |
+| 100 | seconds, rising | 0.05–0.07 ms | 0.08–0.12 ms |
+| 1,000 | seconds, rising | 0.2–0.3 ms | 0.3–0.5 ms |
+| 10,000 | seconds, rising | 2.9 ms, or seconds | 2.8–5.5 ms |
+| 100,000 | seconds, rising | seconds, rising | 58–87 ms |
 
 Items the writer got out per second, of the 1,000 it was asked for:
 
 | Readers | Channels, blocking send | Channels, drop when full | ringbuf |
 |---:|---:|---:|---:|
-| 100 | 92 | 1,000 | 1,000 |
-| 1,000 | 91 | 1,000 | 1,000 |
-| 10,000 | 81 | 1,000 | 1,000 |
-| 100,000 | 8 | 23 | 1,000 |
+| 100 | ~90 | 1,000 | 1,000 |
+| 1,000 | ~90 | 1,000 | 1,000 |
+| 10,000 | ~110 | 430–1,000 | 1,000 |
+| 100,000 | ~10 | ~26 | 1,000 |
 
-- **Blocking channels fail at every size.** One slow reader throttles the writer to that reader's pace. Healthy readers get data that is seconds old, and it keeps getting older for as long as the run lasts.
-- **Channels with hand-written drop logic work up to about 1,000 readers**, and are a little faster than ringbuf there. At 10,000 the send loop barely fits into the write interval. At 100,000 it doesn't, and the writer collapses to 23 items per second.
-- **ringbuf holds the write rate at every size.** Reader latency does grow with the audience, because waking 100,000 goroutines takes time. It stays bounded, while the channel numbers grow without limit.
+- **Blocking channels fail at every size.** The slow readers hold the writer to about 100 items per second. It was asked for 1,000, so it falls further behind every second, and healthy readers get data that is seconds old.
+- **Channels with hand-written drop logic are the fastest option up to 1,000 readers**, a little ahead of ringbuf. They work for as long as one pass over all channels fits into the write interval. At 10,000 readers that pass took 0.7 ms on one machine and 1.3 ms on the other. With 1 ms between writes, the first machine tied with ringbuf and the second fell seconds behind. At 100,000 readers both collapse.
+- **ringbuf holds the write rate at every size.** Its reader latency does grow with the audience, because waking 100,000 goroutines takes time. But it settles at a level, where a writer that can't keep up falls further and further behind.
+- **Healthy readers lose nothing.** In every ringbuf run and every channel run, healthy readers received all the items that were written. Only the slow 1% were dropped or skipped.
 
 ```
 $ go test -bench=BenchmarkFanOutLatency -run=^$ -benchtime=1x -fanout_readers=100,1_000,10_000,100_000 .
 ```
 
-Each case runs for 4 seconds: 2 seconds of warm-up, then 2 seconds measured.
+Each case runs for 5 seconds: 3 seconds of warm-up, then 2 seconds measured. The benchmark also reports the 99th percentile and the share of items delivered.
 
 ### More Differences
 
