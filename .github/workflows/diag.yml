@@ -20,17 +20,17 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: "go.mod"
-      - name: Repeat, new vs old library on the same runner
+      - name: Repeat, fixed test vs master test on the same runner
         run: |
           nproc; go version; grep -m1 'model name' /proc/cpuinfo || true
           go test -c -o new.test .
-          git worktree add -q ../old 50eba8f
+          git worktree add -q ../old origin/master
           (cd ../old && go test -c -o ../ringbuf/old.test .)
           stat() { awk '/^cpu /{print $2+$3, $4+$5+$6+$7+$8, $5, $9}' /proc/stat; } # busy(user+nice) rest idle steal
           for i in $(seq 1 50); do
             for bin in new old; do
               a=$(stat)
-              ./$bin.test -test.v -test.run '^TestRingbuf$' -test.cpuprofile cpu.prof > out.txt 2>&1 || true
+              ./$bin.test -test.v -test.timeout 120s -test.run '^TestRingbuf$' -test.cpuprofile cpu.prof > out.txt 2>&1 || true
               b=$(stat)
               line=$(grep -E -- '--- (PASS|FAIL): TestRingbuf ' out.txt | sed -E 's/--- //')
               echo "$a $b" | awk -v l="$line" -v bin="$bin" -v i="$i" '{printf "run %s %s: %s user=%d idle=%d steal=%d (jiffies)\n", i, bin, l, $5-$1, $7-$3, $8-$4}'
