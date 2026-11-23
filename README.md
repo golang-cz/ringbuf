@@ -19,11 +19,20 @@ Fan-out with Go channels works the other way around. Every reader needs its own 
 |---|---|---|
 | **A reader gets slow** | Writer blocks until it catches up | Writer keeps its pace, reader gets `ErrTooSlow` |
 | **1,000 readers, 10 of them slow** | 1.2 ms per write | **28 ns** per write |
-| **10,000 readers** | 1.3 ms per write | **27 ns** per write |
-| **Memory for 10,000 readers** | 93 MB | **0.9 MB** |
+| **100,000 readers** | 16 ms per write | **66 ns** per write |
+| **Memory for 100,000 readers** | 926 MB | **8.6 MB** |
 | **Delivery** | Guaranteed, with backpressure | Best-effort |
 
 <sub>Apple M4 Pro. Every number comes from a benchmark in this repository, see [ringbuf vs. Go Channels](#ringbuf-vs-go-channels).</sub>
+
+![Go channels vs. ringbuf: writer time per item and memory, from 1 to 100,000 readers](./docs/ringbuf-vs-channels.svg)
+
+And things channels can't do at all:
+
+- **Late joiners replay buffered items.** A new reader can start up to `StartBehind` items back.
+- **Reconnecting clients resume where they left off.** `Seek()` finds their last processed item.
+- **Every reader sees the same order**, even with many concurrent writers.
+- **Batch reads allocate nothing**, and the library has zero dependencies.
 
 **Choose ringbuf** to broadcast a live stream to many readers, when the writer must keep its pace and a reader that can't keep up should be cut off, not waited for.
 
@@ -105,12 +114,10 @@ func main() {
 - **Multi-writer, multi-reader fan-out** — N producers and thousands of independent consumers
 - **Concurrent-safe by default** — `Write()`, `Close()` and every subscriber can run in parallel, with no setup and no locks to manage
 - **Never corrupted data** — a reader lapped by a writer gets `ErrTooSlow`, not stale or torn items (see the `-race` caveat in [Concurrency](#concurrency))
-- **Late joiners and reconnects** — start behind the head, or `Seek()` to the last processed item
 - **Lock-free read hot paths** — atomic cursor loads for ultra-low latency
-- **Zero-allocation reads** — `io.Reader`-style API with caller-managed buffers
+- **`io.Reader`-style API** — `Read()` into caller-managed buffers
 - **Idiomatic iteration** — blocking `iter.Seq` for clean `for range` consumption
 - **Built for scale** — efficiently handles 100,000+ concurrent readers
-- **Zero dependencies** — standard library only
 
 ## Use Cases
 
@@ -154,12 +161,17 @@ To absorb bursts, channels need a buffer per reader: 1,024 slots each here. ring
 | 100 | 926 KB | 17 KB |
 | 1,000 | 9.3 MB | 95 KB |
 | 10,000 | 93 MB | 870 KB |
+| 100,000 | 926 MB | 8.6 MB |
 
 The ringbuf column is the 8 KB shared buffer plus under 100 bytes per subscriber. The gap grows with the item size and with the buffer size. With channels, a burst that one reader can't absorb is queued in that reader's own buffer. With ringbuf, all readers look at the same items in the same buffer, so slow readers cost no extra memory.
 
 ```
 $ go test -bench=BenchmarkFanOutMemory -run=^$ -benchtime=1x .
 ```
+
+The benchmarks stop at 10,000 readers by default. Add `-fanout_readers=100_000` to go further; channels then need close to 1 GB.
+
+At 1,000,000 readers ringbuf holds 86 MB and a write takes about 0.4 µs. A million goroutines overload the Go scheduler at that point, and end-to-end delivery slows down sharply. Channels would need over 9 GB for their buffers alone, so that run has no channel column.
 
 ### Writer Cost
 
@@ -171,6 +183,7 @@ How long is the writer busy publishing one item to N live readers? This is produ
 | 100 | 19 µs | 16 µs | 22 ns |
 | 1,000 | 173 µs | 172 µs | 25 ns |
 | 10,000 | 1.3 ms | 1.3 ms | 27 ns |
+| 100,000 | 16 ms | 16 ms | 66 ns |
 
 - Channels cost one send per reader, so the writer slows down linearly with the audience.
 - Dropping items for full readers doesn't help. The writer still visits every channel.
@@ -189,6 +202,7 @@ A lossy library is easy to make fast. So here is the run where nothing is droppe
 | 100 | 5.8M deliveries/s | 540M deliveries/s | ~90x |
 | 1,000 | 7.0M deliveries/s | 612M deliveries/s | ~90x |
 | 10,000 | 8.3M deliveries/s | 544M deliveries/s | ~65x |
+| 100,000 | 6.0M deliveries/s | 434M deliveries/s | ~70x |
 
 A delivery is one item received by one reader. Readers copy items in batches straight from the shared buffer, without taking a lock. A channel receive takes the channel lock for every single item. The benchmark uses per-item channel receives and batched ringbuf reads, so batching is part of the speedup.
 
