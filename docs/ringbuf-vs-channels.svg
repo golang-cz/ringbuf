@@ -1,70 +1,171 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 450" width="920" height="450" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Publishing one item to up to 100,000 subscribers. With Go channels the writer needs 16 ms per item and the buffers hold 926 MB. With ringbuf the writer needs 66 ns and the buffer holds 8.6 MB.">
-<text x="62" y="26" font-size="17" font-weight="600" fill="#768390">Publishing one item to every subscriber: Go channels vs. ringbuf</text>
-<text x="62" y="46" font-size="12" fill="#768390">An item is one uint64 (8 bytes). Buffers hold 1,024 items. Linear scale, lower is better. Measured on an Apple M4 Pro.</text>
-<text x="62" y="86" font-size="14" font-weight="600" fill="#768390">Time the writer needs per item</text>
-<line x1="62" y1="392.0" x2="338" y2="392.0" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="54" y="396.0" font-size="11" text-anchor="end" fill="#768390">0</text>
-<line x1="62" y1="314.2" x2="338" y2="314.2" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="54" y="318.2" font-size="11" text-anchor="end" fill="#768390">5 ms</text>
-<line x1="62" y1="236.4" x2="338" y2="236.4" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="54" y="240.4" font-size="11" text-anchor="end" fill="#768390">10 ms</text>
-<line x1="62" y1="158.7" x2="338" y2="158.7" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="54" y="162.7" font-size="11" text-anchor="end" fill="#768390">15 ms</text>
-<text x="62.0" y="410" font-size="11" text-anchor="middle" fill="#768390">0</text>
-<text x="131.0" y="410" font-size="11" text-anchor="middle" fill="#768390">25,000</text>
-<text x="200.0" y="410" font-size="11" text-anchor="middle" fill="#768390">50,000</text>
-<text x="269.0" y="410" font-size="11" text-anchor="middle" fill="#768390">75,000</text>
-<text x="338.0" y="410" font-size="11" text-anchor="middle" fill="#768390">100,000</text>
-<text x="200.0" y="432" font-size="12" text-anchor="middle" fill="#768390">subscribers</text>
-<polyline points="62.0,392.0 62.3,391.7 64.8,389.3 89.6,371.8 338.0,143.1" fill="none" stroke="#e5534b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="62.0" cy="392.0" r="3.5" fill="#e5534b"/>
-<circle cx="62.3" cy="391.7" r="3.5" fill="#e5534b"/>
-<circle cx="64.8" cy="389.3" r="3.5" fill="#e5534b"/>
-<circle cx="89.6" cy="371.8" r="3.5" fill="#e5534b"/>
-<circle cx="338.0" cy="143.1" r="3.5" fill="#e5534b"/>
-<text x="348.0" y="141.1" font-size="13" font-weight="600" fill="#e5534b">Go channels</text>
-<text x="348.0" y="157.1" font-size="13" fill="#e5534b">16 ms</text>
-<polyline points="62.0,392.0 62.3,392.0 64.8,392.0 89.6,392.0 338.0,392.0" fill="none" stroke="#2f81f7" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="62.0" cy="392.0" r="3.5" fill="#2f81f7"/>
-<circle cx="62.3" cy="392.0" r="3.5" fill="#2f81f7"/>
-<circle cx="64.8" cy="392.0" r="3.5" fill="#2f81f7"/>
-<circle cx="89.6" cy="392.0" r="3.5" fill="#2f81f7"/>
-<circle cx="338.0" cy="392.0" r="3.5" fill="#2f81f7"/>
-<text x="348.0" y="360.0" font-size="13" font-weight="600" fill="#2f81f7">ringbuf</text>
-<text x="348.0" y="376.0" font-size="13" fill="#2f81f7">66 ns</text>
-<text x="348.0" y="392.0" font-size="12" font-weight="600" fill="#2f81f7">240,000x less</text>
-<text x="512" y="86" font-size="14" font-weight="600" fill="#768390">Memory for all subscriber buffers</text>
-<line x1="512" y1="392.0" x2="788" y2="392.0" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="504" y="396.0" font-size="11" text-anchor="end" fill="#768390">0</text>
-<line x1="512" y1="324.7" x2="788" y2="324.7" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="504" y="328.7" font-size="11" text-anchor="end" fill="#768390">250 MB</text>
-<line x1="512" y1="257.4" x2="788" y2="257.4" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="504" y="261.4" font-size="11" text-anchor="end" fill="#768390">500 MB</text>
-<line x1="512" y1="190.1" x2="788" y2="190.1" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="504" y="194.1" font-size="11" text-anchor="end" fill="#768390">750 MB</text>
-<line x1="512" y1="122.8" x2="788" y2="122.8" stroke="#768390" stroke-opacity="0.25" stroke-width="1"/>
-<text x="504" y="126.8" font-size="11" text-anchor="end" fill="#768390">1 GB</text>
-<text x="512.0" y="410" font-size="11" text-anchor="middle" fill="#768390">0</text>
-<text x="581.0" y="410" font-size="11" text-anchor="middle" fill="#768390">25,000</text>
-<text x="650.0" y="410" font-size="11" text-anchor="middle" fill="#768390">50,000</text>
-<text x="719.0" y="410" font-size="11" text-anchor="middle" fill="#768390">75,000</text>
-<text x="788.0" y="410" font-size="11" text-anchor="middle" fill="#768390">100,000</text>
-<text x="650.0" y="432" font-size="12" text-anchor="middle" fill="#768390">subscribers</text>
-<polyline points="512.0,392.0 512.3,391.8 514.8,389.5 539.6,367.1 788.0,142.7" fill="none" stroke="#e5534b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="512.0" cy="392.0" r="3.5" fill="#e5534b"/>
-<circle cx="512.3" cy="391.8" r="3.5" fill="#e5534b"/>
-<circle cx="514.8" cy="389.5" r="3.5" fill="#e5534b"/>
-<circle cx="539.6" cy="367.1" r="3.5" fill="#e5534b"/>
-<circle cx="788.0" cy="142.7" r="3.5" fill="#e5534b"/>
-<text x="798.0" y="140.7" font-size="13" font-weight="600" fill="#e5534b">Go channels</text>
-<text x="798.0" y="156.7" font-size="13" fill="#e5534b">926 MB</text>
-<polyline points="512.0,392.0 512.3,392.0 514.8,392.0 539.6,391.8 788.0,389.7" fill="none" stroke="#2f81f7" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="512.0" cy="392.0" r="3.5" fill="#2f81f7"/>
-<circle cx="512.3" cy="392.0" r="3.5" fill="#2f81f7"/>
-<circle cx="514.8" cy="392.0" r="3.5" fill="#2f81f7"/>
-<circle cx="539.6" cy="391.8" r="3.5" fill="#2f81f7"/>
-<circle cx="788.0" cy="389.7" r="3.5" fill="#2f81f7"/>
-<text x="798.0" y="357.7" font-size="13" font-weight="600" fill="#2f81f7">ringbuf</text>
-<text x="798.0" y="373.7" font-size="13" fill="#2f81f7">8.6 MB</text>
-<text x="798.0" y="389.7" font-size="12" font-weight="600" fill="#2f81f7">107x less</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 760" width="920" height="760" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="One writer streaming to 100,000 subscribers, 1 in 10 on a very slow connection. ringbuf keeps publishing 1,000 items per second; Go channels drop to about 20. ringbuf needs 140,000 times less writer time and 108 times less memory.">
+<text x="40.0" y="30.0" font-size="19" font-weight="700" fill="#768390">One stream, 100,000 subscribers: ringbuf vs. Go channels</text>
+<text x="40.0" y="52.0" font-size="12" fill="#768390">One writer, one buffered channel per subscriber (the usual Go fan-out) against one shared ringbuf. Measured on an Apple M4 Pro.</text>
+<rect x="40" y="72" width="268" height="118" rx="10" fill="#2da44e" fill-opacity="0.10" stroke="#2da44e" stroke-opacity="0.45"/>
+<text x="58.0" y="116.0" font-size="32" font-weight="700" fill="#2da44e">1,000 items/s</text>
+<text x="58.0" y="140.0" font-size="12.5" fill="#768390">ringbuf still delivers the full stream</text>
+<text x="58.0" y="157.0" font-size="12.5" fill="#768390">when 10,000 of the subscribers are slow.</text>
+<text x="58.0" y="174.0" font-size="12.5" fill="#768390">Go channels: 20 items/s.</text>
+<rect x="326" y="72" width="268" height="118" rx="10" fill="#2da44e" fill-opacity="0.10" stroke="#2da44e" stroke-opacity="0.45"/>
+<text x="344.0" y="116.0" font-size="32" font-weight="700" fill="#2da44e">140,000x</text>
+<text x="344.0" y="140.0" font-size="12.5" fill="#768390">less time per item for the writer:</text>
+<text x="344.0" y="157.0" font-size="12.5" fill="#768390">0.1 µs, not 20 ms.</text>
+<text x="344.0" y="174.0" font-size="12.5" fill="#768390">Flat, however many subscribe.</text>
+<rect x="612" y="72" width="268" height="118" rx="10" fill="#2da44e" fill-opacity="0.10" stroke="#2da44e" stroke-opacity="0.45"/>
+<text x="630.0" y="116.0" font-size="32" font-weight="700" fill="#2da44e">108x</text>
+<text x="630.0" y="140.0" font-size="12.5" fill="#768390">less memory for buffers:</text>
+<text x="630.0" y="157.0" font-size="12.5" fill="#768390">8.6 MB, not 926 MB.</text>
+<text x="630.0" y="174.0" font-size="12.5" fill="#768390">One shared buffer, no copies.</text>
+<text x="92.0" y="236.0" font-size="14" font-weight="600" fill="#768390">Can the stream keep its pace when some connections are very slow?</text>
+<text x="92.0" y="253.0" font-size="11.5" fill="#768390">Items per second the writer gets out, of 1,000 asked. 1 in 10 subscribers takes 100 ms per item, like a modem. Higher is better.</text>
+<line x1="92" y1="440.0" x2="700" y2="440.0" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="444.0" font-size="11" text-anchor="end" fill="#768390">0</text>
+<line x1="92" y1="399.5" x2="700" y2="399.5" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="403.5" font-size="11" text-anchor="end" fill="#768390">250</text>
+<line x1="92" y1="359.1" x2="700" y2="359.1" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="363.1" font-size="11" text-anchor="end" fill="#768390">500</text>
+<line x1="92" y1="318.6" x2="700" y2="318.6" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="322.6" font-size="11" text-anchor="end" fill="#768390">750</text>
+<line x1="92" y1="278.2" x2="700" y2="278.2" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="282.2" font-size="11" text-anchor="end" fill="#768390">1,000</text>
+<text x="92.0" y="458.0" font-size="11" text-anchor="middle" fill="#768390">0</text>
+<text x="244.0" y="458.0" font-size="11" text-anchor="middle" fill="#768390">25,000</text>
+<text x="396.0" y="458.0" font-size="11" text-anchor="middle" fill="#768390">50,000</text>
+<text x="548.0" y="458.0" font-size="11" text-anchor="middle" fill="#768390">75,000</text>
+<text x="700.0" y="458.0" font-size="11" text-anchor="middle" fill="#768390">100,000</text>
+<text x="396.0" y="478.0" font-size="12" text-anchor="middle" fill="#768390">subscribers</text>
+<polyline points="98.1,438.3 152.8,426.1 213.6,433.0 274.4,435.1 335.2,436.5 396.0,437.1 456.8,437.7 517.6,438.1 578.4,438.4 639.2,438.5 700.0,438.7" fill="none" stroke="#e5534b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="98.1" cy="438.3" r="3" fill="#e5534b"/>
+<circle cx="152.8" cy="426.1" r="3" fill="#e5534b"/>
+<circle cx="213.6" cy="433.0" r="3" fill="#e5534b"/>
+<circle cx="274.4" cy="435.1" r="3" fill="#e5534b"/>
+<circle cx="335.2" cy="436.5" r="3" fill="#e5534b"/>
+<circle cx="396.0" cy="437.1" r="3" fill="#e5534b"/>
+<circle cx="456.8" cy="437.7" r="3" fill="#e5534b"/>
+<circle cx="517.6" cy="438.1" r="3" fill="#e5534b"/>
+<circle cx="578.4" cy="438.4" r="3" fill="#e5534b"/>
+<circle cx="639.2" cy="438.5" r="3" fill="#e5534b"/>
+<circle cx="700.0" cy="438.7" r="3" fill="#e5534b"/>
+<text x="710.0" y="418.7" font-size="12.5" font-weight="600" fill="#e5534b">Go channels</text>
+<text x="710.0" y="433.7" font-size="11.5" fill="#e5534b">writer waits for slow ones</text>
+<polyline points="98.1,278.2 152.8,292.5 213.6,374.9 274.4,413.4 335.2,425.9 396.0,430.2 456.8,433.0 517.6,433.6 578.4,435.1 639.2,435.9 700.0,436.8" fill="none" stroke="#d4a72c" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="98.1" cy="278.2" r="3" fill="#d4a72c"/>
+<circle cx="152.8" cy="292.5" r="3" fill="#d4a72c"/>
+<circle cx="213.6" cy="374.9" r="3" fill="#d4a72c"/>
+<circle cx="274.4" cy="413.4" r="3" fill="#d4a72c"/>
+<circle cx="335.2" cy="425.9" r="3" fill="#d4a72c"/>
+<circle cx="396.0" cy="430.2" r="3" fill="#d4a72c"/>
+<circle cx="456.8" cy="433.0" r="3" fill="#d4a72c"/>
+<circle cx="517.6" cy="433.6" r="3" fill="#d4a72c"/>
+<circle cx="578.4" cy="435.1" r="3" fill="#d4a72c"/>
+<circle cx="639.2" cy="435.9" r="3" fill="#d4a72c"/>
+<circle cx="700.0" cy="436.8" r="3" fill="#d4a72c"/>
+<text x="710.0" y="378.8" font-size="12.5" font-weight="600" fill="#d4a72c">Go channels</text>
+<text x="710.0" y="393.8" font-size="11.5" fill="#d4a72c">slow ones skip items</text>
+<polyline points="98.1,278.2 152.8,278.2 213.6,278.2 274.4,278.2 335.2,278.2 396.0,280.6 456.8,271.4 517.6,278.2 578.4,278.3 639.2,267.5 700.0,284.9" fill="none" stroke="#2da44e" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="98.1" cy="278.2" r="3" fill="#2da44e"/>
+<circle cx="152.8" cy="278.2" r="3" fill="#2da44e"/>
+<circle cx="213.6" cy="278.2" r="3" fill="#2da44e"/>
+<circle cx="274.4" cy="278.2" r="3" fill="#2da44e"/>
+<circle cx="335.2" cy="278.2" r="3" fill="#2da44e"/>
+<circle cx="396.0" cy="280.6" r="3" fill="#2da44e"/>
+<circle cx="456.8" cy="271.4" r="3" fill="#2da44e"/>
+<circle cx="517.6" cy="278.2" r="3" fill="#2da44e"/>
+<circle cx="578.4" cy="278.3" r="3" fill="#2da44e"/>
+<circle cx="639.2" cy="267.5" r="3" fill="#2da44e"/>
+<circle cx="700.0" cy="284.9" r="3" fill="#2da44e"/>
+<text x="710.0" y="288.9" font-size="12.5" font-weight="600" fill="#2da44e">ringbuf</text>
+<text x="710.0" y="303.9" font-size="11.5" fill="#2da44e">keeps the pace</text>
+<text x="92.0" y="522.0" font-size="14" font-weight="600" fill="#768390">Time the writer needs per item</text>
+<text x="92.0" y="539.0" font-size="11.5" fill="#768390">Every subscriber keeps up. Lower is better.</text>
+<line x1="92" y1="700.0" x2="330" y2="700.0" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="704.0" font-size="11" text-anchor="end" fill="#768390">0</text>
+<line x1="92" y1="665.5" x2="330" y2="665.5" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="669.5" font-size="11" text-anchor="end" fill="#768390">5 ms</text>
+<line x1="92" y1="630.9" x2="330" y2="630.9" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="634.9" font-size="11" text-anchor="end" fill="#768390">10 ms</text>
+<line x1="92" y1="596.4" x2="330" y2="596.4" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="600.4" font-size="11" text-anchor="end" fill="#768390">15 ms</text>
+<line x1="92" y1="561.8" x2="330" y2="561.8" stroke="#768390" stroke-opacity="0.25"/>
+<text x="84.0" y="565.8" font-size="11" text-anchor="end" fill="#768390">20 ms</text>
+<text x="92.0" y="718.0" font-size="11" text-anchor="middle" fill="#768390">0</text>
+<text x="151.5" y="718.0" font-size="11" text-anchor="middle" fill="#768390">25,000</text>
+<text x="211.0" y="718.0" font-size="11" text-anchor="middle" fill="#768390">50,000</text>
+<text x="270.5" y="718.0" font-size="11" text-anchor="middle" fill="#768390">75,000</text>
+<text x="330.0" y="718.0" font-size="11" text-anchor="middle" fill="#768390">100,000</text>
+<text x="211.0" y="738.0" font-size="12" text-anchor="middle" fill="#768390">subscribers</text>
+<polyline points="94.4,698.9 115.8,688.9 139.6,676.4 163.4,661.8 187.2,645.9 211.0,631.2 234.8,617.5 258.6,602.0 282.4,588.5 306.2,573.5 330.0,559.7" fill="none" stroke="#e5534b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="94.4" cy="698.9" r="3" fill="#e5534b"/>
+<circle cx="115.8" cy="688.9" r="3" fill="#e5534b"/>
+<circle cx="139.6" cy="676.4" r="3" fill="#e5534b"/>
+<circle cx="163.4" cy="661.8" r="3" fill="#e5534b"/>
+<circle cx="187.2" cy="645.9" r="3" fill="#e5534b"/>
+<circle cx="211.0" cy="631.2" r="3" fill="#e5534b"/>
+<circle cx="234.8" cy="617.5" r="3" fill="#e5534b"/>
+<circle cx="258.6" cy="602.0" r="3" fill="#e5534b"/>
+<circle cx="282.4" cy="588.5" r="3" fill="#e5534b"/>
+<circle cx="306.2" cy="573.5" r="3" fill="#e5534b"/>
+<circle cx="330.0" cy="559.7" r="3" fill="#e5534b"/>
+<text x="340.0" y="563.7" font-size="12.5" font-weight="600" fill="#e5534b">Go channels</text>
+<text x="340.0" y="578.7" font-size="11.5" fill="#e5534b">20 ms</text>
+<polyline points="94.4,700.0 115.8,700.0 139.6,700.0 163.4,700.0 187.2,700.0 211.0,700.0 234.8,700.0 258.6,700.0 282.4,700.0 306.2,700.0 330.0,700.0" fill="none" stroke="#2da44e" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="94.4" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="115.8" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="139.6" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="163.4" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="187.2" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="211.0" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="234.8" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="258.6" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="282.4" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="306.2" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="330.0" cy="700.0" r="3" fill="#2da44e"/>
+<text x="340.0" y="680.0" font-size="12.5" font-weight="600" fill="#2da44e">ringbuf</text>
+<text x="340.0" y="695.0" font-size="11.5" fill="#2da44e">0.1 µs</text>
+<text x="552.0" y="522.0" font-size="14" font-weight="600" fill="#768390">Memory for all subscriber buffers</text>
+<text x="552.0" y="539.0" font-size="11.5" fill="#768390">Items are 8-byte uint64s, buffers hold 1,024. Lower is better.</text>
+<line x1="552" y1="700.0" x2="790" y2="700.0" stroke="#768390" stroke-opacity="0.25"/>
+<text x="544.0" y="704.0" font-size="11" text-anchor="end" fill="#768390">0</text>
+<line x1="552" y1="662.0" x2="790" y2="662.0" stroke="#768390" stroke-opacity="0.25"/>
+<text x="544.0" y="666.0" font-size="11" text-anchor="end" fill="#768390">250 MB</text>
+<line x1="552" y1="624.0" x2="790" y2="624.0" stroke="#768390" stroke-opacity="0.25"/>
+<text x="544.0" y="628.0" font-size="11" text-anchor="end" fill="#768390">500 MB</text>
+<line x1="552" y1="586.0" x2="790" y2="586.0" stroke="#768390" stroke-opacity="0.25"/>
+<text x="544.0" y="590.0" font-size="11" text-anchor="end" fill="#768390">750 MB</text>
+<line x1="552" y1="548.0" x2="790" y2="548.0" stroke="#768390" stroke-opacity="0.25"/>
+<text x="544.0" y="552.0" font-size="11" text-anchor="end" fill="#768390">1 GB</text>
+<text x="552.0" y="718.0" font-size="11" text-anchor="middle" fill="#768390">0</text>
+<text x="611.5" y="718.0" font-size="11" text-anchor="middle" fill="#768390">25,000</text>
+<text x="671.0" y="718.0" font-size="11" text-anchor="middle" fill="#768390">50,000</text>
+<text x="730.5" y="718.0" font-size="11" text-anchor="middle" fill="#768390">75,000</text>
+<text x="790.0" y="718.0" font-size="11" text-anchor="middle" fill="#768390">100,000</text>
+<text x="671.0" y="738.0" font-size="12" text-anchor="middle" fill="#768390">subscribers</text>
+<polyline points="554.4,698.6 575.8,685.9 599.6,671.9 623.4,657.8 647.2,643.7 671.0,629.6 694.8,615.6 718.6,601.5 742.4,587.4 766.2,573.4 790.0,559.3" fill="none" stroke="#e5534b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="554.4" cy="698.6" r="3" fill="#e5534b"/>
+<circle cx="575.8" cy="685.9" r="3" fill="#e5534b"/>
+<circle cx="599.6" cy="671.9" r="3" fill="#e5534b"/>
+<circle cx="623.4" cy="657.8" r="3" fill="#e5534b"/>
+<circle cx="647.2" cy="643.7" r="3" fill="#e5534b"/>
+<circle cx="671.0" cy="629.6" r="3" fill="#e5534b"/>
+<circle cx="694.8" cy="615.6" r="3" fill="#e5534b"/>
+<circle cx="718.6" cy="601.5" r="3" fill="#e5534b"/>
+<circle cx="742.4" cy="587.4" r="3" fill="#e5534b"/>
+<circle cx="766.2" cy="573.4" r="3" fill="#e5534b"/>
+<circle cx="790.0" cy="559.3" r="3" fill="#e5534b"/>
+<text x="800.0" y="563.3" font-size="12.5" font-weight="600" fill="#e5534b">Go channels</text>
+<text x="800.0" y="578.3" font-size="11.5" fill="#e5534b">926 MB</text>
+<polyline points="554.4,700.0 575.8,699.9 599.6,699.7 623.4,699.6 647.2,699.5 671.0,699.3 694.8,699.2 718.6,699.1 742.4,699.0 766.2,698.8 790.0,698.7" fill="none" stroke="#2da44e" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="554.4" cy="700.0" r="3" fill="#2da44e"/>
+<circle cx="575.8" cy="699.9" r="3" fill="#2da44e"/>
+<circle cx="599.6" cy="699.7" r="3" fill="#2da44e"/>
+<circle cx="623.4" cy="699.6" r="3" fill="#2da44e"/>
+<circle cx="647.2" cy="699.5" r="3" fill="#2da44e"/>
+<circle cx="671.0" cy="699.3" r="3" fill="#2da44e"/>
+<circle cx="694.8" cy="699.2" r="3" fill="#2da44e"/>
+<circle cx="718.6" cy="699.1" r="3" fill="#2da44e"/>
+<circle cx="742.4" cy="699.0" r="3" fill="#2da44e"/>
+<circle cx="766.2" cy="698.8" r="3" fill="#2da44e"/>
+<circle cx="790.0" cy="698.7" r="3" fill="#2da44e"/>
+<text x="800.0" y="678.7" font-size="12.5" font-weight="600" fill="#2da44e">ringbuf</text>
+<text x="800.0" y="693.7" font-size="11.5" fill="#2da44e">8.6 MB</text>
 </svg>

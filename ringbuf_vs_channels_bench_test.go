@@ -28,6 +28,11 @@ var flagFanOutSubscribers = &SliceFlag[int]{
 	},
 }
 
+var (
+	flagFanOutSlowEvery = flag.Int("fanout_slow_every", 100, "BenchmarkFanOutLatency: every Nth subscriber is slow (100 = 1%, 10 = 10%).")
+	flagFanOutStall     = flag.Duration("fanout_stall", 10*time.Millisecond, "BenchmarkFanOutLatency: time a slow subscriber needs per item.")
+)
+
 func init() {
 	flag.Var(flagFanOutSubscribers, "fanout_subscribers", "Comma-separated list of subscriber counts for the ringbuf vs. channels benchmarks (e.g. 1,100,100_000).")
 }
@@ -309,13 +314,12 @@ func BenchmarkFanOutMemory(b *testing.B) {
 //	go test -bench=BenchmarkFanOutLatency -run=^$ -benchtime=1x .
 func BenchmarkFanOutLatency(b *testing.B) {
 	const (
-		interval  = time.Millisecond // 1,000 items/s.
-		stall     = 10 * time.Millisecond
-		slowEvery = 100             // Subscribers 99, 199, ... are slow.
-		warmUp    = 3 * time.Second // Long enough for blocked channel writers to settle.
-		measure   = 2 * time.Second
-		sampled   = 1_000 // Healthy subscribers that record latency, spread evenly.
+		interval = time.Millisecond // 1,000 items/s.
+		warmUp   = 3 * time.Second  // Long enough for blocked channel writers to settle.
+		measure  = 2 * time.Second
+		sampled  = 1_000 // Healthy subscribers that record latency, spread evenly.
 	)
+	stall, slowEvery := *flagFanOutStall, *flagFanOutSlowEvery
 
 	type variant struct {
 		name string
