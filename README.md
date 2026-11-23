@@ -7,7 +7,9 @@
 
 **ringbuf** is a generic, concurrent, in-memory ring buffer. Any number of writers publish into one stream, and any number of readers consume it at their own pace. Think of it as channel fan-in and fan-out in a single type, built for live streams where delivery is best-effort.
 
-## Why ringbuf  <!-- omit in toc -->
+![Go channels vs. ringbuf: writer time per item and memory, up to 100,000 readers](./docs/ringbuf-vs-channels.svg)
+
+## Why ringbuf over Go Channels  <!-- omit in toc -->
 
 - **The writer never blocks.** It never waits for a reader, however many there are and however slow they get.
 - **Slow readers can't hurt anyone.** A reader that falls too far behind gets `ErrTooSlow` and can rejoin. The writer and the other readers don't notice.
@@ -28,8 +30,6 @@ Fan-out with Go channels works the other way around. Every reader needs its own 
 | **Delivery** | Guaranteed, with backpressure | Best-effort |
 
 <sub>Ranges cover two machines, Apple M4 Pro and Apple M5. Every number comes from a benchmark in this repository, see [ringbuf vs. Go Channels](#ringbuf-vs-go-channels). The chart shows the M4 Pro run.</sub>
-
-![Go channels vs. ringbuf: writer time per item and memory, from 1 to 100,000 readers](./docs/ringbuf-vs-channels.svg)
 
 - [When to Use It](#when-to-use-it)
 - [Quick Start](#quick-start)
