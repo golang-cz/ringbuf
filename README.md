@@ -12,7 +12,7 @@
 - **The writer never blocks.** It never waits for a reader, however many there are and however slow they get.
 - **Slow readers can't hurt anyone.** A reader that falls too far behind gets `ErrTooSlow` and can rejoin. The writer and the other readers don't notice.
 - **One buffer, shared by all readers.** Readers copy straight out of it. There are no per-reader queues, so a slow or bursty reader costs no extra memory.
-- **Fan-out cost stays low.** A write takes 20 to 90 ns with 100 or 100,000 readers. With channels it grows with every reader.
+- **Fan-out cost stays almost flat.** A write takes about 20 ns with 100 readers and under 90 ns with 100,000. With channels it grows with every reader.
 - **Many writers, one stream.** Any number of writers publish concurrently. Every reader sees the same order.
 - **Late joiners and reconnects catch up.** Items stay in the buffer until they are overwritten. A new reader can start up to `StartBehind` items back. A reconnecting client can `Seek()` to its last processed item.
 
