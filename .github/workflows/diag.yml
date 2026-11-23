@@ -11,30 +11,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: ["single", "suite"]
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: "go.mod"
-      - name: Repeat
+      - name: Repeat, new vs old library on the same runner
         run: |
-          nproc; go version; grep -m1 'model name' /proc/cpuinfo
-          go test -c -o rb.test .
-          args="-test.v"
-          if [ "${{ matrix.mode }}" = "single" ]; then args="-test.v -test.run ^TestRingbuf$"; fi
-          slow=0
-          for i in $(seq 1 40); do
-            ./rb.test $args -test.cpuprofile cpu.prof > out.txt 2>&1 || true
-            line=$(grep -E -- '--- (PASS|FAIL): TestRingbuf ' out.txt)
-            echo "run $i: $line"
-            dur=$(echo "$line" | sed -E 's/.*\(([0-9.]+)s\).*/\1/')
-            if echo "$line" | grep -q FAIL || [ "$(echo "$dur > 2.5" | bc)" = "1" ]; then
-              slow=$((slow+1))
-              grep -m3 'fell behind' out.txt || true
-              go tool pprof -top -nodecount=45 rb.test cpu.prof 2>/dev/null | head -60
-            fi
+          nproc; go version; grep -m1 'model name' /proc/cpuinfo || true
+          go test -c -o new.test .
+          git worktree add -q ../old 50eba8f
+          (cd ../old && go test -c -o ../ringbuf/old.test .)
+          stat() { awk '/^cpu /{print $2+$3, $4+$5+$6+$7+$8, $5, $9}' /proc/stat; } # busy(user+nice) rest idle steal
+          for i in $(seq 1 50); do
+            for bin in new old; do
+              a=$(stat)
+              ./$bin.test -test.v -test.run '^TestRingbuf$' -test.cpuprofile cpu.prof > out.txt 2>&1 || true
+              b=$(stat)
+              line=$(grep -E -- '--- (PASS|FAIL): TestRingbuf ' out.txt | sed -E 's/--- //')
+              echo "$a $b" | awk -v l="$line" -v bin="$bin" -v i="$i" '{printf "run %s %s: %s user=%d idle=%d steal=%d (jiffies)\n", i, bin, l, $5-$1, $7-$3, $8-$4}'
+              if echo "$line" | grep -q FAIL; then
+                grep -m2 'fell behind' out.txt || true
+                go tool pprof -top -nodecount=12 $bin.test cpu.prof 2>/dev/null | sed -n 3,18p
+              fi
+            done
           done
-          echo "SLOW_OR_FAILED $slow of 40"
