@@ -11,14 +11,14 @@ description: Use github.com/golang-cz/ringbuf correctly in Go code. Trigger when
 
 Pick ringbuf when all of these hold:
 
-- One stream goes to many readers (fan-out), from one or more writers.
-- The writer must never wait for a reader.
-- A reader that falls too far behind may be dropped and reconnect.
+- One stream goes to many subscribers (fan-out), from one or more writers.
+- The writer must never wait for a subscriber.
+- A subscriber that falls too far behind may be dropped and reconnect.
 
 Keep channels when:
 
-- You need backpressure, or every reader must see every item.
-- There is a single consumer, or each item goes to exactly one of many workers.
+- You need backpressure, or every subscriber must see every item.
+- There is a single subscriber, or each item goes to exactly one of many workers.
 
 ## Core pattern
 
@@ -31,7 +31,7 @@ if err := stream.Write(ev); err != nil {
 }
 stream.Write(batch...) // Batch when you can: one lock, one wake-up.
 
-// One subscriber per reader goroutine.
+// One subscriber per subscriber goroutine.
 sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 	Name:          "conn-42",             // Shows up in error messages.
 	StartBehind:   100,                   // Replay up to 100 buffered items; 0 tails new data only.
@@ -48,7 +48,7 @@ case errors.Is(err, context.Canceled):   // ctx ended.
 }
 ```
 
-The owner of the stream calls `stream.Close()` once, from the writer side, when no more data will come. Readers drain the buffer and then get `io.EOF`.
+The owner of the stream calls `stream.Close()` once, from the writer side, when no more data will come. Subscribers drain the buffer and then get `io.EOF`.
 
 Zero-allocation batch read, for hot paths:
 
@@ -80,22 +80,22 @@ found := sub.SeekAfter(func(ev Event) int { return cmp.Compare(ev.ID, lastSeenID
 - Call `Iter()` at most once per subscriber.
 - Check the error from `Write()` in writers that can outlive the stream.
 - Call `Close()` exactly once. A second call panics, same as a channel.
-- Cancel the subscriber's `ctx` to stop a blocked reader. No extra write is needed to wake it.
+- Cancel the subscriber's `ctx` to stop a blocked subscriber. No extra write is needed to wake it.
 - On `Read()` error, do not use the contents of the slice.
 - Don't add your own mutex around `Write()`. It is already concurrent-safe.
 - Subscribe before the first write you care about. A new subscriber sees future data only, unless `StartBehind` is set.
 
 ## Sizing
 
-- Buffer size bounds how far any reader can lag. `MaxLag` is capped at 90% of it.
-- Rough start: size = peak items per second × seconds of stall you want a reader to survive.
-- Small `MaxLag` drops slow readers early. Large `MaxLag` tolerates bursts and slow networks.
-- Memory is one buffer of `size` items, shared by all readers.
+- Buffer size bounds how far any subscriber can lag. `MaxLag` is capped at 90% of it.
+- Rough start: size = peak items per second × seconds of stall you want a subscriber to survive.
+- Small `MaxLag` drops slow subscribers early. Large `MaxLag` tolerates bursts and slow networks.
+- Memory is one buffer of `size` items, shared by all subscribers.
 
 ## Mistakes to avoid
 
 - Using it as a durable or exactly-once queue. Delivery is best-effort.
-- Expecting the writer to slow down for readers. It never does.
-- Treating `ErrTooSlow` as fatal for the process. Drop or resubscribe that one reader.
-- Storing pointers to mutable values and mutating them after `Write()`. Readers share the same items.
-- Running `go test -race` on a workload that laps readers. The discarded copy is reported by the race detector; the returned data is never torn.
+- Expecting the writer to slow down for subscribers. It never does.
+- Treating `ErrTooSlow` as fatal for the process. Drop or resubscribe that one subscriber.
+- Storing pointers to mutable values and mutating them after `Write()`. Subscribers share the same items.
+- Running `go test -race` on a workload that laps subscribers. The discarded copy is reported by the race detector; the returned data is never torn.

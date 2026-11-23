@@ -16,12 +16,12 @@ import (
 	"github.com/golang-cz/ringbuf"
 )
 
-// Same capacity on both sides: the ring buffer size, and the buffer of every per-reader channel.
+// Same capacity on both sides: the ring buffer size, and the buffer of every per-subscriber channel.
 const vsChannelsCapacity = 1024
 
-// Reader counts for the BenchmarkFanOut* comparisons. Go further with -fanout_readers=100_000,1_000_000;
-// mind that channels then need 8 KB of buffer per reader.
-var flagFanOutReaders = &SliceFlag[int]{
+// Subscriber counts for the BenchmarkFanOut* comparisons. Go further with -fanout_subscribers=100_000,1_000_000;
+// mind that channels then need 8 KB of buffer per subscriber.
+var flagFanOutSubscribers = &SliceFlag[int]{
 	Values: []int{1, 100, 1_000, 10_000},
 	Parse: func(value string) (int, error) {
 		return strconv.Atoi(strings.ReplaceAll(strings.TrimSpace(value), "_", ""))
@@ -29,29 +29,29 @@ var flagFanOutReaders = &SliceFlag[int]{
 }
 
 func init() {
-	flag.Var(flagFanOutReaders, "fanout_readers", "Comma-separated list of reader counts for the ringbuf vs. channels benchmarks (e.g. 1,100,100_000).")
+	flag.Var(flagFanOutSubscribers, "fanout_subscribers", "Comma-separated list of subscriber counts for the ringbuf vs. channels benchmarks (e.g. 1,100,100_000).")
 }
 
-// BenchmarkFanOutWrite compares what it costs the writer to publish one item to N live readers.
+// BenchmarkFanOutWrite compares what it costs the writer to publish one item to N live subscribers.
 //
 //   - ringbuf:           one Write() into the shared buffer
-//   - channels_blocking: one send per reader, the writer waits for slow readers (backpressure)
-//   - channels_drop:     one non-blocking send per reader, items are dropped when a reader is full
+//   - channels_blocking: one send per subscriber, the writer waits for slow subscribers (backpressure)
+//   - channels_drop:     one non-blocking send per subscriber, items are dropped when a subscriber is full
 //
-// The writer runs at full speed, so ringbuf readers get lapped and rejoin, and channels_drop discards items.
-// See BenchmarkFanOutLatency for what the readers see at a realistic write rate.
+// The writer runs at full speed, so ringbuf subscribers get lapped and rejoin, and channels_drop discards items.
+// See BenchmarkFanOutLatency for what the subscribers see at a realistic write rate.
 //
 //	go test -bench=BenchmarkFanOutWrite -run=^$ .
 func BenchmarkFanOutWrite(b *testing.B) {
 	b.Run("ringbuf", func(b *testing.B) {
-		for _, readers := range flagFanOutReaders.Values {
-			b.Run(fmt.Sprintf("readers_%d", readers), func(b *testing.B) {
+		for _, subscribers := range flagFanOutSubscribers.Values {
+			b.Run(fmt.Sprintf("subscribers_%d", subscribers), func(b *testing.B) {
 				stream := ringbuf.New[uint64](vsChannelsCapacity)
 
 				var ready, wg sync.WaitGroup
-				ready.Add(readers)
-				wg.Add(readers)
-				for range readers {
+				ready.Add(subscribers)
+				wg.Add(subscribers)
+				for range subscribers {
 					go func() {
 						defer wg.Done()
 						sub := stream.Subscribe(context.Background(), nil)
@@ -61,7 +61,7 @@ func BenchmarkFanOutWrite(b *testing.B) {
 						for {
 							_, err := sub.Read(items)
 							if errors.Is(err, ringbuf.ErrTooSlow) {
-								// Rejoin at the tail, so the writer always has N live readers to wake.
+								// Rejoin at the tail, so the writer always has N live subscribers to wake.
 								sub = stream.Subscribe(context.Background(), nil)
 								continue
 							}
@@ -87,12 +87,12 @@ func BenchmarkFanOutWrite(b *testing.B) {
 
 	for _, mode := range []string{"channels_blocking", "channels_drop"} {
 		b.Run(mode, func(b *testing.B) {
-			for _, readers := range flagFanOutReaders.Values {
-				b.Run(fmt.Sprintf("readers_%d", readers), func(b *testing.B) {
-					chans := make([]chan uint64, readers)
+			for _, subscribers := range flagFanOutSubscribers.Values {
+				b.Run(fmt.Sprintf("subscribers_%d", subscribers), func(b *testing.B) {
+					chans := make([]chan uint64, subscribers)
 
 					var wg sync.WaitGroup
-					wg.Add(readers)
+					wg.Add(subscribers)
 					for i := range chans {
 						chans[i] = make(chan uint64, vsChannelsCapacity)
 						go func() {
@@ -131,31 +131,31 @@ func BenchmarkFanOutWrite(b *testing.B) {
 	}
 }
 
-// BenchmarkFanOutSlowReaders compares the writer when 1% of 1,000 readers are slow.
-// A slow reader stalls for 1ms after every item, like a client on a congested connection.
+// BenchmarkFanOutSlowSubscribers compares the writer when 1% of 1,000 subscribers are slow.
+// A slow subscriber stalls for 1ms after every item, like a client on a congested connection.
 //
-//   - ringbuf:           slow readers fall behind, get ErrTooSlow and rejoin; the writer doesn't notice
-//   - channels_blocking: the writer is throttled to the pace of the slowest reader
-//   - channels_drop:     the writer keeps going, but still pays one send attempt per reader
+//   - ringbuf:           slow subscribers fall behind, get ErrTooSlow and rejoin; the writer doesn't notice
+//   - channels_blocking: the writer is throttled to the pace of the slowest subscriber
+//   - channels_drop:     the writer keeps going, but still pays one send attempt per subscriber
 //
-// The timer starts after a warm-up that fills every slow reader's buffer, so the fast first items don't flatter channels.
+// The timer starts after a warm-up that fills every slow subscriber's buffer, so the fast first items don't flatter channels.
 //
-//	go test -bench=BenchmarkFanOutSlowReaders -run=^$ .
-func BenchmarkFanOutSlowReaders(b *testing.B) {
+//	go test -bench=BenchmarkFanOutSlowSubscribers -run=^$ .
+func BenchmarkFanOutSlowSubscribers(b *testing.B) {
 	const (
-		readers   = 1_000
-		slowEvery = 100 // Every 100th reader is slow.
-		stall     = time.Millisecond
-		warmUp    = 2 * vsChannelsCapacity
+		subscribers = 1_000
+		slowEvery   = 100 // Every 100th subscriber is slow.
+		stall       = time.Millisecond
+		warmUp      = 2 * vsChannelsCapacity
 	)
 
 	b.Run("ringbuf", func(b *testing.B) {
 		stream := ringbuf.New[uint64](vsChannelsCapacity)
 
 		var ready, wg sync.WaitGroup
-		ready.Add(readers)
-		wg.Add(readers)
-		for i := range readers {
+		ready.Add(subscribers)
+		wg.Add(subscribers)
+		for i := range subscribers {
 			go func() {
 				defer wg.Done()
 				sub := stream.Subscribe(context.Background(), nil)
@@ -163,7 +163,7 @@ func BenchmarkFanOutSlowReaders(b *testing.B) {
 
 				items := make([]uint64, 64)
 				if i%slowEvery == 0 {
-					// One item per stall, same as a slow channel reader.
+					// One item per stall, same as a slow channel subscriber.
 					items = items[:1]
 				}
 				for {
@@ -198,10 +198,10 @@ func BenchmarkFanOutSlowReaders(b *testing.B) {
 
 	for _, mode := range []string{"channels_blocking", "channels_drop"} {
 		b.Run(mode, func(b *testing.B) {
-			chans := make([]chan uint64, readers)
+			chans := make([]chan uint64, subscribers)
 
 			var wg sync.WaitGroup
-			wg.Add(readers)
+			wg.Add(subscribers)
 			for i := range chans {
 				chans[i] = make(chan uint64, vsChannelsCapacity)
 				go func() {
@@ -247,8 +247,8 @@ func BenchmarkFanOutSlowReaders(b *testing.B) {
 	}
 }
 
-// BenchmarkFanOutMemory reports the heap held by the buffers of N idle readers, each able to lag 1,024 items.
-// ringbuf keeps one buffer for all readers, channels need one buffer per reader.
+// BenchmarkFanOutMemory reports the heap held by the buffers of N idle subscribers, each able to lag 1,024 items.
+// ringbuf keeps one buffer for all subscribers, channels need one buffer per subscriber.
 //
 //	go test -bench=BenchmarkFanOutMemory -run=^$ -benchtime=1x .
 func BenchmarkFanOutMemory(b *testing.B) {
@@ -263,12 +263,12 @@ func BenchmarkFanOutMemory(b *testing.B) {
 		b.ReportMetric(0, "ns/op")
 	}
 
-	for _, readers := range flagFanOutReaders.Values {
-		b.Run(fmt.Sprintf("ringbuf/readers_%d", readers), func(b *testing.B) {
+	for _, subscribers := range flagFanOutSubscribers.Values {
+		b.Run(fmt.Sprintf("ringbuf/subscribers_%d", subscribers), func(b *testing.B) {
 			before := heap()
 
 			stream := ringbuf.New[uint64](vsChannelsCapacity)
-			subs := make([]*ringbuf.Subscriber[uint64], readers)
+			subs := make([]*ringbuf.Subscriber[uint64], subscribers)
 			for i := range subs {
 				subs[i] = stream.Subscribe(context.Background(), nil)
 			}
@@ -277,10 +277,10 @@ func BenchmarkFanOutMemory(b *testing.B) {
 			runtime.KeepAlive(subs)
 		})
 
-		b.Run(fmt.Sprintf("channels/readers_%d", readers), func(b *testing.B) {
+		b.Run(fmt.Sprintf("channels/subscribers_%d", subscribers), func(b *testing.B) {
 			before := heap()
 
-			chans := make([]chan uint64, readers)
+			chans := make([]chan uint64, subscribers)
 			for i := range chans {
 				chans[i] = make(chan uint64, vsChannelsCapacity)
 			}
@@ -291,17 +291,17 @@ func BenchmarkFanOutMemory(b *testing.B) {
 	}
 }
 
-// BenchmarkFanOutLatency compares what readers see: how old an item is when a healthy reader receives it.
+// BenchmarkFanOutLatency compares what subscribers see: how old an item is when a healthy subscriber receives it.
 //
-// One writer publishes 1,000 items/s on a fixed schedule to N readers. 1% of the readers are slow and need
-// 10ms per item, so they can't keep up. Latency is measured on the healthy readers, from the moment an item
+// One writer publishes 1,000 items/s on a fixed schedule to N subscribers. 1% of the subscribers are slow and need
+// 10ms per item, so they can't keep up. Latency is measured on the healthy subscribers, from the moment an item
 // was scheduled to be written, so a writer that falls behind shows up as latency too.
 //
-//   - ringbuf:           slow readers get ErrTooSlow and rejoin
-//   - channels_blocking: the writer waits for slow readers
-//   - channels_drop:     the writer drops items for readers whose channel is full
+//   - ringbuf:           slow subscribers get ErrTooSlow and rejoin
+//   - channels_blocking: the writer waits for slow subscribers
+//   - channels_drop:     the writer drops items for subscribers whose channel is full
 //
-// It also reports delivered-%: the share of written items that healthy readers received. Both ringbuf and
+// It also reports delivered-%: the share of written items that healthy subscribers received. Both ringbuf and
 // channels_drop may skip items, and a low latency means little if most items never arrive.
 //
 // Each case runs for a fixed 5s (3s warm-up, 2s measured), so run it once:
@@ -311,23 +311,23 @@ func BenchmarkFanOutLatency(b *testing.B) {
 	const (
 		interval  = time.Millisecond // 1,000 items/s.
 		stall     = 10 * time.Millisecond
-		slowEvery = 100             // Readers 99, 199, ... are slow.
+		slowEvery = 100             // Subscribers 99, 199, ... are slow.
 		warmUp    = 3 * time.Second // Long enough for blocked channel writers to settle.
 		measure   = 2 * time.Second
-		sampled   = 1_000 // Healthy readers that record latency, spread evenly.
+		sampled   = 1_000 // Healthy subscribers that record latency, spread evenly.
 	)
 
 	type variant struct {
 		name string
-		// start launches the readers and returns the writer's publish func and a stop func.
-		start func(readers int, isSlow func(int) bool, record func(reader int, item uint64), stop <-chan struct{}) (write func(uint64), wait func())
+		// start launches the subscribers and returns the writer's publish func and a stop func.
+		start func(subscribers int, isSlow func(int) bool, record func(subscriber int, item uint64), stop <-chan struct{}) (write func(uint64), wait func())
 	}
 
 	channels := func(drop bool) func(int, func(int) bool, func(int, uint64), <-chan struct{}) (func(uint64), func()) {
-		return func(readers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
-			chans := make([]chan uint64, readers)
+		return func(subscribers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
+			chans := make([]chan uint64, subscribers)
 			var wg sync.WaitGroup
-			wg.Add(readers)
+			wg.Add(subscribers)
 			for i := range chans {
 				chans[i] = make(chan uint64, vsChannelsCapacity)
 				go func() {
@@ -371,7 +371,7 @@ func BenchmarkFanOutLatency(b *testing.B) {
 	}
 
 	variants := []variant{
-		{"ringbuf", func(readers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
+		{"ringbuf", func(subscribers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
 			stream := ringbuf.New[uint64](vsChannelsCapacity)
 			ctx, cancel := context.WithCancel(context.Background())
 			go func() {
@@ -380,9 +380,9 @@ func BenchmarkFanOutLatency(b *testing.B) {
 			}()
 
 			var ready, wg sync.WaitGroup
-			ready.Add(readers)
-			wg.Add(readers)
-			for i := range readers {
+			ready.Add(subscribers)
+			wg.Add(subscribers)
+			for i := range subscribers {
 				go func() {
 					defer wg.Done()
 					sub := stream.Subscribe(ctx, nil)
@@ -391,7 +391,7 @@ func BenchmarkFanOutLatency(b *testing.B) {
 					slow := isSlow(i)
 					items := make([]uint64, 64)
 					if slow {
-						// One item per stall, same as a slow channel reader.
+						// One item per stall, same as a slow channel subscriber.
 						items = items[:1]
 					}
 					for {
@@ -421,27 +421,27 @@ func BenchmarkFanOutLatency(b *testing.B) {
 	}
 
 	for _, v := range variants {
-		for _, readers := range flagFanOutReaders.Values {
-			b.Run(fmt.Sprintf("%s/readers_%d", v.name, readers), func(b *testing.B) {
+		for _, subscribers := range flagFanOutSubscribers.Values {
+			b.Run(fmt.Sprintf("%s/subscribers_%d", v.name, subscribers), func(b *testing.B) {
 				isSlow := func(i int) bool { return i%slowEvery == slowEvery-1 }
 
-				// Latency samples of every step-th healthy reader; each reader appends to its own slice.
-				step := max(readers/sampled, 1)
-				samples := make([][]int64, readers)
+				// Latency samples of every step-th healthy subscriber; each subscriber appends to its own slice.
+				step := max(subscribers/sampled, 1)
+				samples := make([][]int64, subscribers)
 				var begin time.Time
-				record := func(reader int, item uint64) {
-					if reader%step != 0 || isSlow(reader) {
+				record := func(subscriber int, item uint64) {
+					if subscriber%step != 0 || isSlow(subscriber) {
 						return
 					}
 					// Filter on the receive time: a writer that fell behind still delivers old items after the warm-up.
 					if now := time.Since(begin); now >= warmUp {
-						samples[reader] = append(samples[reader], int64(now)-int64(item))
+						samples[subscriber] = append(samples[subscriber], int64(now)-int64(item))
 					}
 				}
 
 				stop := make(chan struct{})
-				write, wait := v.start(readers, isSlow, record, stop)
-				// Readers only read begin after the first write, which comes after this.
+				write, wait := v.start(subscribers, isSlow, record, stop)
+				// Subscribers only read begin after the first write, which comes after this.
 				begin = time.Now()
 
 				// Items carry their scheduled write time. A late writer makes its items older, it doesn't hide the delay.
@@ -463,16 +463,16 @@ func BenchmarkFanOutLatency(b *testing.B) {
 					}
 				}
 
-				// Let healthy readers pick up the last items before stopping everyone.
+				// Let healthy subscribers pick up the last items before stopping everyone.
 				time.Sleep(50 * time.Millisecond)
 				close(stop)
 				wait()
 
 				var all []int64
 				recorders := 0
-				for reader, s := range samples {
+				for subscriber, s := range samples {
 					all = append(all, s...)
-					if reader%step == 0 && !isSlow(reader) {
+					if subscriber%step == 0 && !isSlow(subscriber) {
 						recorders++
 					}
 				}
@@ -497,17 +497,17 @@ func BenchmarkFanOutLatency(b *testing.B) {
 	}
 }
 
-// BenchmarkFanOutWriters compares fan-in plus fan-out: M writers publish concurrently to 1,000 live readers.
+// BenchmarkFanOutWriters compares fan-in plus fan-out: M writers publish concurrently to 1,000 live subscribers.
 // It reports the time per item across all writers, so lower means more total throughput.
 //
-//   - ringbuf:  writers share one short critical section, readers never take it
-//   - channels: every writer sends to every reader's channel, so writers contend on all of them
+//   - ringbuf:  writers share one short critical section, subscribers never take it
+//   - channels: every writer sends to every subscriber's channel, so writers contend on all of them
 //
-// As in BenchmarkFanOutWrite the writers run at full speed, so ringbuf readers get lapped and rejoin.
+// As in BenchmarkFanOutWrite the writers run at full speed, so ringbuf subscribers get lapped and rejoin.
 //
 //	go test -bench=BenchmarkFanOutWriters -run=^$ -count=3 .
 func BenchmarkFanOutWriters(b *testing.B) {
-	const readers = 1_000
+	const subscribers = 1_000
 
 	// run splits b.N items across the writers and waits for all of them.
 	run := func(b *testing.B, writers int, write func(item uint64)) {
@@ -533,9 +533,9 @@ func BenchmarkFanOutWriters(b *testing.B) {
 			stream := ringbuf.New[uint64](vsChannelsCapacity)
 
 			var ready, wg sync.WaitGroup
-			ready.Add(readers)
-			wg.Add(readers)
-			for range readers {
+			ready.Add(subscribers)
+			wg.Add(subscribers)
+			for range subscribers {
 				go func() {
 					defer wg.Done()
 					sub := stream.Subscribe(context.Background(), nil)
@@ -563,10 +563,10 @@ func BenchmarkFanOutWriters(b *testing.B) {
 		})
 
 		b.Run(fmt.Sprintf("channels/writers_%d", writers), func(b *testing.B) {
-			chans := make([]chan uint64, readers)
+			chans := make([]chan uint64, subscribers)
 
 			var wg sync.WaitGroup
-			wg.Add(readers)
+			wg.Add(subscribers)
 			for i := range chans {
 				chans[i] = make(chan uint64, vsChannelsCapacity)
 				go func() {
