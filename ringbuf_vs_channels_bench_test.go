@@ -301,15 +301,18 @@ func BenchmarkFanOutMemory(b *testing.B) {
 //   - channels_blocking: the writer waits for slow readers
 //   - channels_drop:     the writer drops items for readers whose channel is full
 //
-// Each case runs for a fixed 4s (2s warm-up, 2s measured), so run it once:
+// It also reports delivered-%: the share of written items that healthy readers received. Both ringbuf and
+// channels_drop may skip items, and a low latency means little if most items never arrive.
+//
+// Each case runs for a fixed 5s (3s warm-up, 2s measured), so run it once:
 //
 //	go test -bench=BenchmarkFanOutLatency -run=^$ -benchtime=1x .
 func BenchmarkFanOutLatency(b *testing.B) {
 	const (
 		interval  = time.Millisecond // 1,000 items/s.
 		stall     = 10 * time.Millisecond
-		slowEvery = 100 // Readers 99, 199, ... are slow.
-		warmUp    = 2 * time.Second
+		slowEvery = 100             // Readers 99, 199, ... are slow.
+		warmUp    = 3 * time.Second // Long enough for blocked channel writers to settle.
 		measure   = 2 * time.Second
 		sampled   = 1_000 // Healthy readers that record latency, spread evenly.
 	)
@@ -466,8 +469,12 @@ func BenchmarkFanOutLatency(b *testing.B) {
 				wait()
 
 				var all []int64
-				for _, s := range samples {
+				recorders := 0
+				for reader, s := range samples {
 					all = append(all, s...)
+					if reader%step == 0 && !isSlow(reader) {
+						recorders++
+					}
 				}
 				slices.Sort(all)
 				percentile := func(p float64) float64 {
@@ -481,6 +488,10 @@ func BenchmarkFanOutLatency(b *testing.B) {
 				b.ReportMetric(percentile(0.50), "p50-ms")
 				b.ReportMetric(percentile(0.99), "p99-ms")
 				b.ReportMetric(float64(written)/measure.Seconds(), "writes/s")
+				if written > 0 {
+					// Can pass 100 when a late writer's backlog from the warm-up arrives in the measured window.
+					b.ReportMetric(100*float64(len(all))/float64(written*recorders), "delivered-%")
+				}
 			})
 		}
 	}
