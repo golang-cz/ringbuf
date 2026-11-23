@@ -5,7 +5,10 @@
 
 **ringbuf** is a high-performance, generic, concurrent ring buffer. It enables thousands of consumers to independently read from a live stream of data with minimal synchronization and zero-allocation reads. Designed for high-throughput scenarios where readers are disposable and best-effort delivery is acceptable.
 
+Think of it as channel fan-in and fan-out in a single type. Any number of writers publish into one stream, and any number of readers consume it at their own pace. A slow reader can never block a writer or another reader. It gets dropped with an error instead.
+
 - [Features](#features)
+- [Why Not Channels?](#why-not-channels)
 - [Use Cases](#use-cases)
 - [Quick Start](#quick-start)
 - [Design Philosophy](#design-philosophy)
@@ -15,6 +18,7 @@
 	- [Performance Tips](#performance-tips)
 	- [In-memory Throughput Benchmark](#in-memory-throughput-benchmark)
 - [Examples](#examples)
+	- [Multiple Writers](#multiple-writers)
 	- [Batch Writes/Reads](#batch-writesreads)
 	- [Stream Historical Data](#stream-historical-data)
 	- [Tail Latest Data](#tail-latest-data)
@@ -25,13 +29,31 @@
 ## Features
 
 - **Multi-writer, multi-reader fan-out** — N producers and thousands of independent consumers
+- **Concurrent-safe by default** — `Write()`, `Close()` and every subscriber can run in parallel, with no setup and no locks to manage
 - **Readers never slow down the writer** — 100,000 fast or slow readers cost the writer nothing but shared CPU time; slow readers are dropped with an error
+- **Never corrupted data** — a reader lapped by a writer gets `ErrTooSlow`, not stale or torn items
 - **Lossy, best-effort delivery** — optimized for real-time streams where readers may fall behind
 - **Lock-free read hot paths** — atomic cursor loads for ultra-low latency
 - **Zero-allocation reads** — `io.Reader`-style API with caller-managed buffers
 - **Idiomatic iteration** — blocking `iter.Seq` for clean `for range` consumption
 - **Independent subscribers** — each reader maintains its own cursor and lag tolerance
-- **Built for scale** — efficiently handles 10,000+ concurrent readers
+- **Built for scale** — efficiently handles 100,000+ concurrent readers
+- **Late joiners and reconnects** — start behind the head, or `Seek()` to the last processed item
+
+## Why Not Channels?
+
+Go channels are great for handing work to one consumer. Fan-out to many consumers is where they get expensive.
+
+| | Go channels | ringbuf |
+|---|---|---|
+| **Fan-out to N readers** | One channel per reader. The writer sends N times. | One shared buffer. The writer does no per-reader work. |
+| **Slow reader** | Blocks the writer, or needs drop logic for every reader. | Dropped with `ErrTooSlow`. The writer and other readers are unaffected. |
+| **Fan-in from N writers** | All senders contend on the channel. | Writers share one short critical section. Readers never take it. |
+| **Late joiner** | Sees nothing that was sent before. | Replays the buffered window with `StartBehind` or `Seek()`. |
+| **Batching** | One item per send. | Variadic `Write()` and batch `Read()`. |
+| **Memory** | A buffer per reader. | One buffer for all readers. |
+
+Channels remain the right tool when you need backpressure, or when every reader must see every item.
 
 ## Use Cases
 
@@ -41,6 +63,7 @@ It is **not** intended for durable queues, guaranteed delivery, or backpressure-
 Typical use cases include:
 
 - **Fan-out distribution** — replace Go channels for one-to-many data delivery
+- **Fan-in aggregation** — merge events from many producers into one ordered stream for all readers
 - **In-memory pub/sub** — lightweight real-time event streaming
 - **High-frequency trading** — ultra-low latency market data fan-out
 - **Metrics aggregation** — distributing high-frequency metrics to multiple consumers
@@ -70,7 +93,7 @@ import (
 func main() {
 	stream := ringbuf.New[string](1000)
 
-	// Single writer (producer)
+	// Writer (producer). Any number of them can write concurrently.
 	go func() {
 		for i := range 10_000 {
 			stream.Write(fmt.Sprintf("event-%d", i))
@@ -119,6 +142,9 @@ Any number of writers can write to the same ring buffer while any number of subs
 - `Write()` is safe to call from multiple goroutines, and concurrently with `Close()`.
 - `Write()` returns `ringbuf.ErrClosed` after `Close()`. Once `Close()` returns, no more data lands in the buffer.
 - `Close()` twice panics, same as closing a channel twice.
+- `Subscribe()` is safe to call at any time, including while writers are writing and after `Close()`.
+- Each `Subscriber` belongs to one goroutine. Give every reader goroutine its own subscriber.
+- Concurrent writers are serialized. All readers see the items in the same order.
 
 Subscribers copy data without taking a lock. If a writer laps a subscriber in the middle of a copy, that `Read()` discards the copy and returns `ErrTooSlow`. It never returns overwritten or torn items. `Seek()` falls back to the tail in the same situation.
 
@@ -199,6 +225,29 @@ ok  	github.com/golang-cz/ringbuf	56.813s
 We can see that we were able to handle up to 10,000 subscribers with maximum throughput and no errors. However, at 50,000 subscribers, we start seeing errors (subscribers falling behind). We can see that our total read throughput peaked at ~19 billion messages/sec.
 
 ## Examples
+
+### Multiple Writers
+
+Any number of producers can write into the same stream. `Write()` returns `ringbuf.ErrClosed` once the stream is closed:
+
+```go
+// Fan-in: one goroutine per source, all writing into the same stream.
+var wg sync.WaitGroup
+for _, source := range sources {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for event := range source {
+			if err := stream.Write(event); err != nil {
+				return // ringbuf.ErrClosed
+			}
+		}
+	}()
+}
+
+wg.Wait()
+stream.Close() // Subscribers drain the buffer and get io.EOF.
+```
 
 ### Batch Writes/Reads
 
