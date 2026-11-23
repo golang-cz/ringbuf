@@ -7,7 +7,7 @@
 
 **ringbuf** is a generic, concurrent, in-memory ring buffer. Any number of writers publish into one stream, and any number of subscribers consume it at their own pace. Think of it as channel fan-in and fan-out in a single type, built for live streams where delivery is best-effort.
 
-![One stream to 100,000 subscribers. With 1 in 10 on a very slow connection, ringbuf still publishes 1,000 items per second and Go channels about 20. ringbuf needs 140,000 times less writer time and 108 times less memory.](./docs/ringbuf-vs-channels.svg)
+![One stream to 100,000 subscribers, 1 in 10 of them slow clients. ringbuf still publishes 1,000 items per second and fast subscribers get data under half a second old. Go channels publish about 20 items per second. ringbuf needs 140,000 times less writer time and 108 times less memory.](./docs/ringbuf-vs-channels.svg)
 
 ## Why ringbuf over Go Channels  <!-- omit in toc -->
 
@@ -242,29 +242,32 @@ Each case runs for 5 seconds: 3 seconds of warm-up, then 2 seconds measured. The
 
 ### Very Slow Connections
 
-How many subscribers fit on one machine before the stream slows down? Here 1 in 10 subscribers is on a very slow connection. It takes 100 ms per item, like a modem or a bad mobile link. The writer is asked for 1,000 items per second.
+Real audiences have slow clients: phones on weak networks, bad Wi-Fi, background browser tabs. How many subscribers fit on one machine before they slow the stream down for everyone?
 
-Items the writer got out per second (Apple M4 Pro):
+Here 1 in 10 subscribers is a slow client that can take only 10 items per second. The writer wants to send 1,000 items per second. The fast subscribers are the ones to watch: do they still get fresh data?
 
-| Subscribers | Channels, blocking send | Channels, drop when full | ringbuf |
-|---:|---:|---:|---:|
-| 1,000 | ~10 | 1,000 | 1,000 |
-| 10,000 | ~90 | ~910 | 1,000 |
-| 20,000 | ~40 | ~400 | 1,000 |
-| 50,000 | ~20 | ~60 | 1,000 |
-| 100,000 | ~8 | ~20 | 1,000 |
+Median of three runs on an Apple M4 Pro. "Age" is how old an item is when a fast subscriber gets it, at the 99th percentile.
 
-- **Blocking channels slow down with the first slow subscriber.**
-- **Channels with drop logic kept the pace up to about 10,000 subscribers** on this machine. Past that, one pass over all channels takes longer than the write interval.
-- **ringbuf kept the pace at every size**, within a few percent. The slow subscribers are dropped and reconnect. They cost nobody else anything.
-- **The price is data age.** A healthy ringbuf subscriber got its items 0.4 ms old at 1,000 subscribers, 7 ms at 10,000, 67 ms at 50,000 and 190 ms at 100,000.
+| Subscribers | Channels: items/s | Channels: age | ringbuf: items/s | ringbuf: age |
+|---:|---:|---:|---:|---:|
+| 1,000 | 1,000 | 3 ms | 1,000 | 2 ms |
+| 10,000 | ~220 | 3.9 s | 1,000 | 18 ms |
+| 20,000 | ~100 | 4.5 s | 1,000 | 320 ms |
+| 50,000 | ~60 | 4.7 s | 1,000 | 230 ms |
+| 100,000 | ~20 | 4.9 s | 1,000 | 400 ms |
+
+- **Channels here skip an item when a subscriber's buffer is full.** That is the better channel design. With a plain blocking send the writer waits for the slowest client and gets out about 10 items per second at any size.
+- **Channels kept the pace at 1,000 subscribers.** At 10,000 they managed 210 to 910 items per second, depending on the run. One pass over all channels no longer fits into the write interval there.
+- **Channel ages are cut off by the test.** It runs for 5 seconds, and the writer is still falling further behind when it ends.
+- **ringbuf kept the pace at every size**, within a few percent. Slow clients are dropped and reconnect. Fast subscribers received every item.
+- **ringbuf's price is data age.** It grows with the audience: the median is 0.4 ms at 1,000 subscribers, 7 ms at 10,000 and 190 ms at 100,000. The 99th percentile is noisy: at 20,000 subscribers it was 48, 320 and 670 ms in the three runs.
 
 ```
-$ go test -bench=BenchmarkFanOutLatency -run=^$ -benchtime=1x -fanout_slow_every=10 -fanout_stall=100ms \
+$ go test -bench='BenchmarkFanOutLatency/(ringbuf|channels_drop)' -run=^$ -count=3 -fanout_slow_every=10 -fanout_stall=100ms \
     -fanout_subscribers=1000,10000,20000,30000,40000,50000,60000,70000,80000,90000,100000 .
 ```
 
-The chart at the top of this page is drawn from this run, and from `BenchmarkFanOutWrite` and `BenchmarkFanOutMemory` with the same subscriber counts.
+The chart at the top of this page is drawn from these runs, and from `BenchmarkFanOutWrite` and `BenchmarkFanOutMemory` with the same subscriber counts.
 
 ### Many Writers
 
