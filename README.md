@@ -9,26 +9,34 @@
 
 Think of it as channel fan-in and fan-out in a single type. Any number of writers publish into one stream, and any number of readers consume it at their own pace. A slow reader can never block a writer or another reader. It gets dropped with an error instead.
 
-## The Problem It Solves  <!-- omit in toc -->
+## Why ringbuf  <!-- omit in toc -->
 
-Broadcasting a stream to many goroutines with channels means one channel per reader. The writer pays one send per reader for every item. One slow reader stalls everyone, unless you write drop logic by hand.
+- **The writer never blocks.** It never waits for a reader, however many there are and however slow they get. Delivery to readers is best-effort.
+- **Slow readers can't hurt anyone.** A reader that falls too far behind gets `ErrTooSlow` and can rejoin. The writer and the other readers don't notice.
+- **One buffer, shared by all readers.** Readers copy straight out of the shared ring. No per-reader queue exists, so a slow or bursty reader costs no extra memory.
 
-With ringbuf, the writer stores each item once in a shared buffer. Every reader follows it with its own cursor. The cost of a write stays flat, whether 1 or 100,000 readers are attached:
+Fan-out with Go channels works the other way around. Every reader needs its own channel with its own buffer and lock. The writer sends each item once per reader, and blocks as soon as one of those buffers is full.
 
-| Readers | Go channels | ringbuf | |
-|---:|---:|---:|---:|
-| 100 | 19 µs | 22 ns | **~900x faster** |
-| 1,000 | 173 µs | 25 ns | **~7,000x faster** |
-| 10,000 | 1.3 ms | 27 ns | **~47,000x faster** |
+| Fan-out to many readers | Go channels | ringbuf |
+|---|---|---|
+| **A reader gets slow** | The writer blocks until that reader catches up | The writer keeps its pace; the reader is dropped with `ErrTooSlow` |
+| **1,000 readers, 10 of them slow** | Writer needs 1.2 ms per item, throttled to the slowest reader | Writer needs 28 ns per item, unchanged |
+| **Writer cost per item** | One send per reader: 19 µs, 173 µs, 1.3 ms at 100, 1,000, 10,000 readers | One write: 22 to 27 ns at any reader count |
+| **Memory for 10,000 readers** | 93 MB, one buffer per reader | 0.9 MB, one shared buffer |
+| **Delivery** | Every item, enforced by backpressure | Best-effort; a reader either keeps up or is told it didn't |
 
-<sub>Writer-side cost of publishing one item: one ringbuf `Write()` vs. one channel send per reader. Apple M4 Pro, `go test -bench=BenchmarkFanOutWrite -run=^$ .`</sub>
+<sub>Apple M4 Pro, `uint64` items, buffer capacity 1,024 on both sides. Every number comes from a benchmark in this repository. See [ringbuf vs. Go Channels](#ringbuf-vs-go-channels) for the commands.</sub>
 
-That is the writer's side only. End to end, with every reader receiving every item, ringbuf still delivers 65x to 90x more items per second. See [ringbuf vs. Go Channels](#ringbuf-vs-go-channels) for both benchmarks.
+**Choose ringbuf** to broadcast a live stream to many readers, when the producer must keep its pace and a reader that can't keep up should be cut off, not waited for.
+
+**Choose channels** for a single consumer, for work queues where each item goes to one worker, and whenever you need backpressure or guaranteed delivery.
 
 - [Quick Start](#quick-start)
 - [Features](#features)
 - [ringbuf vs. Go Channels](#ringbuf-vs-go-channels)
 	- [Semantics](#semantics)
+	- [Slow Readers](#slow-readers)
+	- [Memory](#memory)
 	- [Writer Cost](#writer-cost)
 	- [When Nothing Is Dropped](#when-nothing-is-dropped)
 	- [What You'd Have to Get Right Yourself](#what-youd-have-to-get-right-yourself)
@@ -120,10 +128,46 @@ Go channels are great for handing work to one consumer. Fan-out to many consumer
 |---|---|---|
 | **Fan-out to N readers** | One channel per reader. The writer sends N times. | One shared buffer. The writer does no per-reader work. |
 | **Slow reader** | Blocks the writer, or needs drop logic for every reader. | Dropped with `ErrTooSlow`. The writer and other readers are unaffected. |
+| **Undelivered items** | Queue up in every reader's own channel buffer. | Stay in the one shared buffer until overwritten. Readers copy them out directly. |
+| **Locking** | Every channel has its own lock, taken on each send and each receive. | One short lock shared by writers only. Reads are lock-free. |
 | **Fan-in from N writers** | All senders contend on the channel. | Writers share one short critical section. Readers never take it. |
 | **Late joiner** | Sees nothing that was sent before. | Replays the buffered window with `StartBehind` or `Seek()`. |
 | **Batching** | One item per send. | Variadic `Write()` and batch `Read()`. |
-| **Memory** | A buffer per reader. | One buffer for all readers. |
+| **Memory** | A buffer per reader. | One buffer for all readers, plus under 100 bytes per subscriber. |
+
+### Slow Readers
+
+This is the case ringbuf was built for. 1,000 readers are attached, and 10 of them stall for 1 ms after every item, like clients on a congested connection. How long does the writer need per item?
+
+| | Writer, per item | Writes/s |
+|---|---:|---:|
+| Channels, blocking send | 1.2 ms | ~800 |
+| Channels, drop when full | 170 µs | ~5,900 |
+| ringbuf | 28 ns | ~36,000,000 |
+
+- With blocking sends, 10 slow readers throttle the writer and the 990 healthy readers with it.
+- Dropping items for full channels unblocks the writer, but it still walks all 1,000 channels for every item.
+- With ringbuf the slow readers fall behind, get `ErrTooSlow` and rejoin at the tail. Nothing else changes.
+
+```
+$ go test -bench=BenchmarkFanOutSlowReaders -run=^$ -benchtime=2s -count=3 .
+```
+
+### Memory
+
+To absorb bursts, channels need a buffer per reader: 1,024 slots each here. ringbuf has 1,024 slots in total. A reader that lags past its `MaxLag` (default: half the buffer) is dropped with `ErrTooSlow`. Heap held by idle readers, with `uint64` items:
+
+| Readers | Go channels | ringbuf |
+|---:|---:|---:|
+| 100 | 926 KB | 17 KB |
+| 1,000 | 9.3 MB | 95 KB |
+| 10,000 | 93 MB | 870 KB |
+
+The ringbuf column is the 8 KB shared buffer plus under 100 bytes per subscriber. The gap grows with the item size and with the buffer size. With channels, a burst that one reader can't absorb is queued in that reader's own buffer. With ringbuf, all readers look at the same items in the same buffer, so slow readers cost no extra memory.
+
+```
+$ go test -bench=BenchmarkFanOutMemory -run=^$ -benchtime=1x .
+```
 
 ### Writer Cost
 
@@ -159,11 +203,11 @@ A delivery is one item received by one reader. Readers copy items in batches str
 Both tables are medians of 3 runs on Apple M4 Pro (12 cores), `uint64` items, capacity 1,024 on both sides. The single-reader rows vary the most between runs. Run them yourself:
 
 ```
-$ go test -bench=BenchmarkFanOutWrite -run=^$ -count=3 .    # writer cost
-$ go test -bench=BenchmarkFanOutDeliver -run=^$ -count=3 .  # nothing dropped
+$ go test -bench=BenchmarkFanOutWrite -run=^$ -count=3 .        # writer cost
+$ go test -bench=BenchmarkFanOutDeliver -run=^$ -count=3 .      # nothing dropped
 ```
 
-The benchmark lives in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
+All four benchmarks live in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
 
 ### What You'd Have to Get Right Yourself
 

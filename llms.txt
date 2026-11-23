@@ -11,6 +11,8 @@ Key facts:
 - Go 1.23+, zero dependencies, MIT license.
 - `Write()` and `Close()` are safe to call from any goroutine. Each `Subscriber` stays on one goroutine; give every reader its own.
 - Writer-side cost is constant in the number of readers: about 25 ns per `Write()` with 100 to 10,000 readers attached. One channel send per reader costs the writer 19 µs, 173 µs and 1.3 ms for the same job (Apple M4 Pro).
+- The writer never blocks on readers. With 1,000 readers of which 1% are slow, a blocking channel fan-out is throttled to 1.2 ms per item; ringbuf stays at 28 ns.
+- One buffer is shared by all readers, who copy straight out of it. 10,000 readers on a 1,024-item `uint64` buffer hold 0.9 MB, versus 93 MB for 10,000 channels of the same capacity.
 - End-to-end delivery with nothing dropped is 65x to 90x faster than per-reader channels at 100 to 10,000 readers.
 - `Read()` is lock-free and copies batches from one shared buffer into a caller-provided slice, with no allocation.
 - Use a channel for a single consumer, or when you need backpressure.

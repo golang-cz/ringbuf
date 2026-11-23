@@ -9,14 +9,15 @@ Every change is judged against these. A change that breaks one is a regression, 
 1. Readers never slow down the writer. 10 or 100,000 readers, fast or slow.
 2. A slow reader dies with `ErrTooSlow`. It never blocks a writer or another reader.
 3. A reader never gets overwritten or torn data.
-4. Faster readers are welcome, but never at the cost of whole-system throughput.
+4. One buffer is shared by all readers. No per-reader queue, no per-reader copy of pending items.
+5. Faster readers are welcome, but never at the cost of whole-system throughput.
 
 ## Commands
 
 ```
 go test ./...                               # unit tests
 go test -race ./...                         # ringbuf_wrap_test.go is excluded under -race on purpose
-go test -bench=BenchmarkFanOut -run=^$ .    # ringbuf vs. Go channels
+go test -bench=BenchmarkFanOut -run=^$ .    # ringbuf vs. Go channels: writer cost, slow readers, memory, delivery
 go test -bench=. -run=^$ ./...              # everything, as CI runs it
 ```
 
