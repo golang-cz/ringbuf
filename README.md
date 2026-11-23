@@ -7,7 +7,7 @@
 
 **ringbuf** is a generic, concurrent, in-memory ring buffer. Any number of writers publish into one stream, and any number of subscribers consume it at their own pace. Think of it as channel fan-in and fan-out in a single type, built for live streams where delivery is best-effort.
 
-![One stream to 100,000 subscribers, 1 in 10 of them slow clients. ringbuf still publishes 1,000 items per second and fast subscribers get data under half a second old. Go channels publish about 20 items per second. ringbuf needs 140,000 times less writer time and 108 times less memory.](./docs/ringbuf-vs-channels.svg)
+![ringbuf against Go channels at 100,000 subscribers: 1,000 messages per second where channels manage 20, 140,000 times less writer time, 108 times less memory.](./docs/ringbuf-vs-channels.svg)
 
 ## Why ringbuf over Go Channels  <!-- omit in toc -->
 
@@ -136,6 +136,10 @@ func main() {
 - **Zero dependencies** — standard library only
 
 ## ringbuf vs. Go Channels
+
+![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 20 messages per second and seconds of delay. With nobody slow, channels need 20 ms per message and 926 MB, ringbuf 0.1 microseconds and 8.6 MB.](./docs/ringbuf-vs-channels-charts.svg)
+
+The numbers behind the charts are in [Very Slow Connections](#very-slow-connections), [Writer Cost](#writer-cost) and [Memory](#memory).
 
 Go channels are great for handing work to one goroutine. Fan-out to many subscribers is where they get expensive. Five benchmarks show where, and by how much. They use `uint64` items and a capacity of 1,024 on both sides. Channels send one item at a time, which is the usual way to write a fan-out.
 
@@ -267,7 +271,7 @@ $ go test -bench='BenchmarkFanOutLatency/(ringbuf|channels_drop)' -run=^$ -count
     -fanout_subscribers=1000,10000,20000,30000,40000,50000,60000,70000,80000,90000,100000 .
 ```
 
-The chart at the top of this page is drawn from these runs, and from `BenchmarkFanOutWrite` and `BenchmarkFanOutMemory` with the same subscriber counts.
+The charts at the top of this section are drawn from these runs, and from `BenchmarkFanOutWrite` and `BenchmarkFanOutMemory` with the same subscriber counts.
 
 ### Many Writers
 
