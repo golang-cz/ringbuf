@@ -6,10 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,7 +39,7 @@ func init() {
 //   - channels_drop:     one non-blocking send per reader, items are dropped when a reader is full
 //
 // The writer runs at full speed, so ringbuf readers get lapped and rejoin, and channels_drop discards items.
-// See BenchmarkFanOutDeliver for a run where every reader receives every item.
+// See BenchmarkFanOutLatency for what the readers see at a realistic write rate.
 //
 //	go test -bench=BenchmarkFanOutWrite -run=^$ .
 func BenchmarkFanOutWrite(b *testing.B) {
@@ -129,114 +129,6 @@ func BenchmarkFanOutWrite(b *testing.B) {
 			}
 		})
 	}
-}
-
-// BenchmarkFanOutDeliver compares end-to-end delivery: every one of N readers receives every item.
-//
-// The writer publishes a burst that fits the buffer, then waits until all readers have consumed it.
-// Nothing is dropped on either side, so this is the fair comparison for lossless workloads.
-// Channels receive item by item, ringbuf readers use its batch Read(); batching is part of the speedup.
-//
-//	go test -bench=BenchmarkFanOutDeliver -run=^$ .
-func BenchmarkFanOutDeliver(b *testing.B) {
-	const burst = vsChannelsCapacity / 2
-
-	// deliver runs b.N items through write() in bursts and waits for all readers after each burst.
-	deliver := func(b *testing.B, readers int, target *atomic.Uint64, consumed *sync.WaitGroup, write func(item uint64)) {
-		b.ResetTimer()
-		for written := 0; written < b.N; {
-			n := min(burst, b.N-written)
-			target.Store(uint64(written + n))
-			consumed.Add(readers)
-			for i := range n {
-				write(uint64(written + i))
-			}
-			consumed.Wait()
-			written += n
-		}
-		b.StopTimer()
-
-		b.ReportMetric(float64(b.N)*float64(readers)/b.Elapsed().Seconds(), "deliveries/s")
-	}
-
-	b.Run("ringbuf", func(b *testing.B) {
-		for _, readers := range flagFanOutReaders.Values {
-			b.Run(fmt.Sprintf("readers_%d", readers), func(b *testing.B) {
-				stream := ringbuf.New[uint64](vsChannelsCapacity)
-
-				var target atomic.Uint64
-				var ready, consumed, wg sync.WaitGroup
-				ready.Add(readers)
-				wg.Add(readers)
-				for range readers {
-					go func() {
-						defer wg.Done()
-						sub := stream.Subscribe(context.Background(), &ringbuf.SubscribeOpts{MaxLag: vsChannelsCapacity * 9 / 10})
-						ready.Done()
-
-						items := make([]uint64, 64)
-						var got uint64
-						for {
-							n, err := sub.Read(items)
-							if errors.Is(err, ringbuf.ErrTooSlow) {
-								// A burst always fits MaxLag; fail loudly instead of leaving the writer waiting.
-								panic("reader fell behind, the comparison must be lossless")
-							}
-							if err != nil {
-								return
-							}
-							got += uint64(n)
-							if got == target.Load() {
-								consumed.Done()
-							}
-						}
-					}()
-				}
-				ready.Wait()
-
-				deliver(b, readers, &target, &consumed, func(item uint64) { stream.Write(item) })
-
-				stream.Close()
-				wg.Wait()
-			})
-		}
-	})
-
-	b.Run("channels", func(b *testing.B) {
-		for _, readers := range flagFanOutReaders.Values {
-			b.Run(fmt.Sprintf("readers_%d", readers), func(b *testing.B) {
-				chans := make([]chan uint64, readers)
-
-				var target atomic.Uint64
-				var consumed, wg sync.WaitGroup
-				wg.Add(readers)
-				for i := range chans {
-					chans[i] = make(chan uint64, vsChannelsCapacity)
-					go func() {
-						defer wg.Done()
-						var got uint64
-						for range chans[i] {
-							got++
-							if got == target.Load() {
-								consumed.Done()
-							}
-						}
-					}()
-				}
-
-				deliver(b, readers, &target, &consumed, func(item uint64) {
-					for _, ch := range chans {
-						ch <- item
-					}
-				})
-
-				for _, ch := range chans {
-					close(ch)
-				}
-				wg.Wait()
-			})
-		}
-	})
 }
 
 // BenchmarkFanOutSlowReaders compares the writer when 1% of 1,000 readers are slow.
@@ -396,5 +288,200 @@ func BenchmarkFanOutMemory(b *testing.B) {
 			report(b, before)
 			runtime.KeepAlive(chans)
 		})
+	}
+}
+
+// BenchmarkFanOutLatency compares what readers see: how old an item is when a healthy reader receives it.
+//
+// One writer publishes 1,000 items/s on a fixed schedule to N readers. 1% of the readers are slow and need
+// 10ms per item, so they can't keep up. Latency is measured on the healthy readers, from the moment an item
+// was scheduled to be written, so a writer that falls behind shows up as latency too.
+//
+//   - ringbuf:           slow readers get ErrTooSlow and rejoin
+//   - channels_blocking: the writer waits for slow readers
+//   - channels_drop:     the writer drops items for readers whose channel is full
+//
+// Each case runs for a fixed 4s (2s warm-up, 2s measured), so run it once:
+//
+//	go test -bench=BenchmarkFanOutLatency -run=^$ -benchtime=1x .
+func BenchmarkFanOutLatency(b *testing.B) {
+	const (
+		interval  = time.Millisecond // 1,000 items/s.
+		stall     = 10 * time.Millisecond
+		slowEvery = 100 // Readers 99, 199, ... are slow.
+		warmUp    = 2 * time.Second
+		measure   = 2 * time.Second
+		sampled   = 1_000 // Healthy readers that record latency, spread evenly.
+	)
+
+	type variant struct {
+		name string
+		// start launches the readers and returns the writer's publish func and a stop func.
+		start func(readers int, isSlow func(int) bool, record func(reader int, item uint64), stop <-chan struct{}) (write func(uint64), wait func())
+	}
+
+	channels := func(drop bool) func(int, func(int) bool, func(int, uint64), <-chan struct{}) (func(uint64), func()) {
+		return func(readers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
+			chans := make([]chan uint64, readers)
+			var wg sync.WaitGroup
+			wg.Add(readers)
+			for i := range chans {
+				chans[i] = make(chan uint64, vsChannelsCapacity)
+				go func() {
+					defer wg.Done()
+					slow := isSlow(i)
+					for {
+						select {
+						case <-stop:
+							return
+						case item := <-chans[i]:
+							record(i, item)
+							if slow {
+								time.Sleep(stall)
+							}
+						}
+					}
+				}()
+			}
+
+			write := func(item uint64) {
+				for _, ch := range chans {
+					select {
+					case ch <- item:
+					case <-stop:
+						return
+					}
+				}
+			}
+			if drop {
+				write = func(item uint64) {
+					for _, ch := range chans {
+						select {
+						case ch <- item:
+						default:
+						}
+					}
+				}
+			}
+			return write, wg.Wait
+		}
+	}
+
+	variants := []variant{
+		{"ringbuf", func(readers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
+			stream := ringbuf.New[uint64](vsChannelsCapacity)
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				<-stop
+				cancel()
+			}()
+
+			var ready, wg sync.WaitGroup
+			ready.Add(readers)
+			wg.Add(readers)
+			for i := range readers {
+				go func() {
+					defer wg.Done()
+					sub := stream.Subscribe(ctx, nil)
+					ready.Done()
+
+					slow := isSlow(i)
+					items := make([]uint64, 64)
+					if slow {
+						// One item per stall, same as a slow channel reader.
+						items = items[:1]
+					}
+					for {
+						n, err := sub.Read(items)
+						if errors.Is(err, ringbuf.ErrTooSlow) {
+							sub = stream.Subscribe(ctx, nil)
+							continue
+						}
+						if err != nil {
+							return
+						}
+						for _, item := range items[:n] {
+							record(i, item)
+						}
+						if slow {
+							time.Sleep(stall)
+						}
+					}
+				}()
+			}
+			ready.Wait()
+
+			return func(item uint64) { stream.Write(item) }, wg.Wait
+		}},
+		{"channels_blocking", channels(false)},
+		{"channels_drop", channels(true)},
+	}
+
+	for _, v := range variants {
+		for _, readers := range flagFanOutReaders.Values {
+			b.Run(fmt.Sprintf("%s/readers_%d", v.name, readers), func(b *testing.B) {
+				isSlow := func(i int) bool { return i%slowEvery == slowEvery-1 }
+
+				// Latency samples of every step-th healthy reader; each reader appends to its own slice.
+				step := max(readers/sampled, 1)
+				samples := make([][]int64, readers)
+				var begin time.Time
+				record := func(reader int, item uint64) {
+					if reader%step != 0 || isSlow(reader) {
+						return
+					}
+					// Filter on the receive time: a writer that fell behind still delivers old items after the warm-up.
+					if now := time.Since(begin); now >= warmUp {
+						samples[reader] = append(samples[reader], int64(now)-int64(item))
+					}
+				}
+
+				stop := make(chan struct{})
+				write, wait := v.start(readers, isSlow, record, stop)
+				// Readers only read begin after the first write, which comes after this.
+				begin = time.Now()
+
+				// Items carry their scheduled write time. A late writer makes its items older, it doesn't hide the delay.
+				written := 0
+				for i := 0; ; i++ {
+					scheduled := time.Duration(i) * interval
+					if scheduled >= warmUp+measure || time.Since(begin) >= warmUp+measure {
+						break
+					}
+					if d := scheduled - time.Since(begin); d > 200*time.Microsecond {
+						time.Sleep(d - 200*time.Microsecond)
+					}
+					for time.Since(begin) < scheduled {
+						// Spin through the last stretch; time.Sleep alone overshoots.
+					}
+					write(uint64(scheduled))
+					if time.Since(begin) >= warmUp {
+						written++
+					}
+				}
+
+				// Let healthy readers pick up the last items before stopping everyone.
+				time.Sleep(50 * time.Millisecond)
+				close(stop)
+				wait()
+
+				var all []int64
+				for _, s := range samples {
+					all = append(all, s...)
+				}
+				slices.Sort(all)
+				percentile := func(p float64) float64 {
+					if len(all) == 0 {
+						return 0
+					}
+					return float64(all[int(float64(len(all)-1)*p)]) / 1e6
+				}
+
+				b.ReportMetric(0, "ns/op")
+				b.ReportMetric(percentile(0.50), "p50-ms")
+				b.ReportMetric(percentile(0.99), "p99-ms")
+				b.ReportMetric(float64(written)/measure.Seconds(), "writes/s")
+			})
+		}
 	}
 }
