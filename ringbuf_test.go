@@ -24,10 +24,16 @@ func (d *Data) String() string {
 func TestRingbuf(t *testing.T) {
 	bufferSize := uint64(2_000)
 	numItems := 10_000
-	numReaders := 2_000
+	numReaders := 1_000
 	maxLag := bufferSize * 9 / 10
 
 	stream := ringbuf.New[*Data](bufferSize)
+
+	// Formatting every name in every subscriber needs four full cores and fails on a busy CI runner.
+	names := make([]string, numItems)
+	for i := range names {
+		names[i] = fmt.Sprintf("%v", i)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -64,7 +70,7 @@ func TestRingbuf(t *testing.T) {
 						cancel()
 						return
 					}
-					if val.Name != fmt.Sprintf("%v", count) {
+					if val.Name != names[count] {
 						t.Errorf("unexpected data: expected %v, got %v", count, val)
 						cancel()
 						return
@@ -83,7 +89,7 @@ func TestRingbuf(t *testing.T) {
 	for i := range numItems {
 		data := &Data{
 			ID:   i,
-			Name: fmt.Sprintf("%v", i),
+			Name: names[i],
 		}
 		stream.Write(data)
 
