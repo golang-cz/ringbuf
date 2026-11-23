@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/golang-cz/ringbuf"
 )
@@ -221,4 +223,164 @@ func BenchmarkFanOutDeliver(b *testing.B) {
 			})
 		}
 	})
+}
+
+// BenchmarkFanOutSlowReaders compares the writer when 1% of 1,000 readers are slow.
+// A slow reader stalls for 1ms after every item, like a client on a congested connection.
+//
+//   - ringbuf:           slow readers fall behind, get ErrTooSlow and rejoin; the writer doesn't notice
+//   - channels_blocking: the writer is throttled to the pace of the slowest reader
+//   - channels_drop:     the writer keeps going, but still pays one send attempt per reader
+//
+// The timer starts after a warm-up that fills every slow reader's buffer, so the fast first items don't flatter channels.
+//
+//	go test -bench=BenchmarkFanOutSlowReaders -run=^$ .
+func BenchmarkFanOutSlowReaders(b *testing.B) {
+	const (
+		readers   = 1_000
+		slowEvery = 100 // Every 100th reader is slow.
+		stall     = time.Millisecond
+		warmUp    = 2 * vsChannelsCapacity
+	)
+
+	b.Run("ringbuf", func(b *testing.B) {
+		stream := ringbuf.New[uint64](vsChannelsCapacity)
+
+		var ready, wg sync.WaitGroup
+		ready.Add(readers)
+		wg.Add(readers)
+		for i := range readers {
+			go func() {
+				defer wg.Done()
+				sub := stream.Subscribe(context.Background(), nil)
+				ready.Done()
+
+				items := make([]uint64, 64)
+				if i%slowEvery == 0 {
+					// One item per stall, same as a slow channel reader.
+					items = items[:1]
+				}
+				for {
+					_, err := sub.Read(items)
+					if errors.Is(err, ringbuf.ErrTooSlow) {
+						sub = stream.Subscribe(context.Background(), nil)
+						continue
+					}
+					if err != nil {
+						return
+					}
+					if i%slowEvery == 0 {
+						time.Sleep(stall)
+					}
+				}
+			}()
+		}
+		ready.Wait()
+
+		for i := range warmUp {
+			stream.Write(uint64(i))
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			stream.Write(uint64(i))
+		}
+		b.StopTimer()
+
+		stream.Close()
+		wg.Wait()
+	})
+
+	for _, mode := range []string{"channels_blocking", "channels_drop"} {
+		b.Run(mode, func(b *testing.B) {
+			chans := make([]chan uint64, readers)
+
+			var wg sync.WaitGroup
+			wg.Add(readers)
+			for i := range chans {
+				chans[i] = make(chan uint64, vsChannelsCapacity)
+				go func() {
+					defer wg.Done()
+					for range chans[i] {
+						if i%slowEvery == 0 {
+							time.Sleep(stall)
+						}
+					}
+				}()
+			}
+
+			write := func(item uint64) {
+				for _, ch := range chans {
+					ch <- item
+				}
+			}
+			if mode == "channels_drop" {
+				write = func(item uint64) {
+					for _, ch := range chans {
+						select {
+						case ch <- item:
+						default:
+						}
+					}
+				}
+			}
+
+			for i := range warmUp {
+				write(uint64(i))
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				write(uint64(i))
+			}
+			b.StopTimer()
+
+			for _, ch := range chans {
+				close(ch)
+			}
+			wg.Wait()
+		})
+	}
+}
+
+// BenchmarkFanOutMemory reports the heap held by the buffers of N idle readers, each able to lag 1,024 items.
+// ringbuf keeps one buffer for all readers, channels need one buffer per reader.
+//
+//	go test -bench=BenchmarkFanOutMemory -run=^$ -benchtime=1x .
+func BenchmarkFanOutMemory(b *testing.B) {
+	heap := func() uint64 {
+		runtime.GC()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		return m.HeapAlloc
+	}
+	report := func(b *testing.B, before uint64) {
+		b.ReportMetric(float64(heap()-before)/1024, "heap-KB")
+		b.ReportMetric(0, "ns/op")
+	}
+
+	for _, readers := range vsChannelsReaders {
+		b.Run(fmt.Sprintf("ringbuf/readers_%d", readers), func(b *testing.B) {
+			before := heap()
+
+			stream := ringbuf.New[uint64](vsChannelsCapacity)
+			subs := make([]*ringbuf.Subscriber[uint64], readers)
+			for i := range subs {
+				subs[i] = stream.Subscribe(context.Background(), nil)
+			}
+
+			report(b, before)
+			runtime.KeepAlive(subs)
+		})
+
+		b.Run(fmt.Sprintf("channels/readers_%d", readers), func(b *testing.B) {
+			before := heap()
+
+			chans := make([]chan uint64, readers)
+			for i := range chans {
+				chans[i] = make(chan uint64, vsChannelsCapacity)
+			}
+
+			report(b, before)
+			runtime.KeepAlive(chans)
+		})
+	}
 }
