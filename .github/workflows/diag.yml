@@ -1,0 +1,40 @@
+# TEMPORARY: diagnoses the TestRingbuf stall on CI runners. Removed before this PR is ready.
+name: Diagnose
+
+on:
+  pull_request:
+    branches:
+      - "**"
+
+jobs:
+  diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ["single", "suite"]
+        shard: [1, 2]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+      - name: Repeat
+        run: |
+          nproc; go version; grep -m1 'model name' /proc/cpuinfo
+          go test -c -o rb.test .
+          args="-test.v"
+          if [ "${{ matrix.mode }}" = "single" ]; then args="-test.v -test.run ^TestRingbuf$"; fi
+          slow=0
+          for i in $(seq 1 40); do
+            ./rb.test $args -test.cpuprofile cpu.prof > out.txt 2>&1 || true
+            line=$(grep -E -- '--- (PASS|FAIL): TestRingbuf ' out.txt)
+            echo "run $i: $line"
+            dur=$(echo "$line" | sed -E 's/.*\(([0-9.]+)s\).*/\1/')
+            if echo "$line" | grep -q FAIL || [ "$(echo "$dur > 2.5" | bc)" = "1" ]; then
+              slow=$((slow+1))
+              grep -m3 'fell behind' out.txt || true
+              go tool pprof -top -nodecount=45 rb.test cpu.prof 2>/dev/null | head -60
+            fi
+          done
+          echo "SLOW_OR_FAILED $slow of 40"
