@@ -9,6 +9,7 @@
 - [Use Cases](#use-cases)
 - [Quick Start](#quick-start)
 - [Design Philosophy](#design-philosophy)
+- [Concurrency](#concurrency)
 - [Performance Characteristics](#performance-characteristics)
 - [Benchmarks](#benchmarks)
 	- [Performance Tips](#performance-tips)
@@ -23,9 +24,10 @@
 
 ## Features
 
-- **Single-writer, multi-reader fan-out** — one producer with thousands of independent consumers
+- **Multi-writer, multi-reader fan-out** — N producers and thousands of independent consumers
+- **Readers never slow down the writer** — 100,000 fast or slow readers cost the writer nothing but shared CPU time; slow readers are dropped with an error
 - **Lossy, best-effort delivery** — optimized for real-time streams where readers may fall behind
-- **Lock-free hot paths** — atomic writes and reads for ultra-low latency
+- **Lock-free read hot paths** — atomic cursor loads for ultra-low latency
 - **Zero-allocation reads** — `io.Reader`-style API with caller-managed buffers
 - **Idiomatic iteration** — blocking `iter.Seq` for clean `for range` consumption
 - **Independent subscribers** — each reader maintains its own cursor and lag tolerance
@@ -92,7 +94,7 @@ func main() {
 
 ## Design Philosophy
 
-ringbuf is designed for **high-throughput, real-time fan-out** with a single producer and many independent consumers.
+ringbuf is designed for **high-throughput, real-time fan-out** with one or more producers and many independent consumers.
 The primary goal is to maximize write and read performance while keeping synchronization overhead close to zero.
 
 This design intentionally favors:
@@ -104,20 +106,33 @@ Key trade-offs:
 
 - **Lossy by design** — readers that fall behind are terminated
 - **No backpressure** — the producer never blocks on consumers
-- **Single writer** — enables lock-free writes and predictable performance
+- **Mutex-protected writes** — concurrent writers serialize on a short critical section, reads stay lock-free
 - **Blocking readers** — subscribers wait efficiently for new data
 - **Best-effort delivery** — suitable for live streams, not durable messaging
 
 If you need guaranteed delivery, persistence, replay, or backpressure, this is not the right abstraction.
 
+## Concurrency
+
+Any number of writers can write to the same ring buffer while any number of subscribers read from it (N writers × M readers).
+
+- `Write()` is safe to call from multiple goroutines, and concurrently with `Close()`.
+- `Write()` returns `ringbuf.ErrClosed` after `Close()`. Once `Close()` returns, no more data lands in the buffer.
+- `Close()` twice panics, same as closing a channel twice.
+
+Subscribers copy data without taking a lock. If a writer laps a subscriber in the middle of a copy, that `Read()` discards the copy and returns `ErrTooSlow`. It never returns overwritten or torn items. `Seek()` falls back to the tail in the same situation.
+
+Known caveat: the discarded copy is an intentional unsynchronized read, so `go test -race` reports it when a subscriber gets lapped mid-copy.
+
 ## Performance Characteristics
 
-- **Write path**: Lock-free using atomic operations (~5 ns/op)
+- **Write path**: Mutex-protected, atomic cursor for readers (~9 ns/op uncontended)
 - **Read path**: Lock-free hot path with minimal synchronization when waiting for new data
-- **Memory**: No memory allocations during data reads (0 B/op)
+- **Memory**: No memory allocations during data reads (0 B/op on the hot path)
 - **Scalability**: Optimized for thousands of concurrent subscribers (1-100,000 in-memory readers)
 - **Latency**: Sub-microsecond read/write operations in common scenarios
-- **Write-throughput**: 200M+ writes/sec on modern hardware
+- **Write-throughput**: 250M+ writes/sec with batched writes on modern hardware, with 1,000 or 100,000 readers attached
+- **Writer vs. readers**: Writers share no lock with readers. A write hands the wake-up to one parked reader, which wakes the rest
 - **Read-throughput**: 200B+ in-memory reads/sec on modern hardware
 
 ## Benchmarks

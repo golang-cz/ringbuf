@@ -78,46 +78,54 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 
 		// Lock-free hot path.
 		if s.pos != writePos {
-			return s.readAvailable(s.pos, writePos, p), nil
+			return s.readAvailable(s.pos, writePos, p)
 		}
 
 		// Check for end of stream.
-		if writePos, err, ok := s.checkEnd(s.pos); ok {
+		if _, err, ok := s.checkEnd(s.pos); ok {
 			if err != nil {
 				return 0, err
 			}
-			return s.readAvailable(s.pos, writePos, p), nil
+			// Data landed before Close(): retry, so the drain goes through the lag check too.
+			continue
 		}
 
-		// Acquire lock and double-check the position.
-		s.rb.mu.Lock()
+		// Load notify before the election and the re-check, or a concurrent wake-up could be missed.
+		notify := *s.rb.notify.Load()
 
-		writePos = s.rb.writePos.Load()
-		if s.pos != writePos {
-			s.rb.mu.Unlock()
-			return s.readAvailable(s.pos, writePos, p), nil
+		// Only the leader listens on wake; a nil channel never fires for the others.
+		var wake chan struct{}
+		leader := s.rb.leader.CompareAndSwap(false, true)
+		if leader {
+			wake = s.rb.wake
+			// A notify loaded before the previous leader stepped down would wake this one at once, and all readers with it.
+			notify = nil
 		}
 
-		// Check for end of stream.
-		if writePos, err, ok := s.checkEnd(s.pos); ok {
-			s.rb.mu.Unlock()
-			if err != nil {
-				return 0, err
+		// Wait for new data, then retry.
+		if s.pos == s.rb.writePos.Load() {
+			select {
+			case <-notify:
+			case <-wake:
+			case <-s.ctx.Done():
+			case <-s.rb.closed:
 			}
-			return s.readAvailable(s.pos, writePos, p), nil
 		}
 
-		// Wait for new data. Will wake up and retry on broadcast signal.
-		s.rb.cond.Wait()
-		s.rb.mu.Unlock()
+		// A leader always wakes the rest when it steps down, so they elect a new one.
+		if leader {
+			s.rb.leader.Store(false)
+			s.rb.wakeAll()
+		}
 	}
 }
 
 // readAvailable copies up to len(items) buffered items in [pos, writePos) into items and advances s.pos.
-func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) int {
+// It returns ErrTooSlow, and no items, if the writer overwrote any of them during the copy.
+func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) (int, error) {
 	maxRead := min(uint64(len(items)), writePos-pos)
 	if maxRead == 0 {
-		return 0
+		return 0, nil
 	}
 
 	start := pos % s.rb.size
@@ -131,9 +139,15 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) in
 		n = copy(items, s.rb.buf[start:])
 		n += copy(items[n:], s.rb.buf[:end-s.rb.size])
 	}
+
+	if lag, ok := s.rb.intact(pos); !ok {
+		// Don't leave torn items behind in the caller's buffer.
+		clear(items[:n])
+		return 0, fmt.Errorf("subscriber[%v] fell behind (lag=%v, maxLag=%v): %w", s.Name, lag, s.maxLag, ErrTooSlow)
+	}
 	s.pos += uint64(n)
 
-	return n
+	return n, nil
 }
 
 // checkEnd checks whether the subscriber should stop due to context cancellation or stream closure.
@@ -248,17 +262,34 @@ func (s *Subscriber[T]) seek(cmp func(T) int) (bool, uint64, uint64) {
 	}
 	minPos := writePos - window
 
+	// cmpAt never hands cmp an item the writer may have overwritten during the copy.
+	lapped := false
+	cmpAt := func(pos uint64) int {
+		item := s.rb.buf[pos%s.rb.size]
+		if _, ok := s.rb.intact(pos); !ok {
+			lapped = true
+			return 0
+		}
+		return cmp(item)
+	}
+
 	// lower-bound: the first "match candidate" (we still need to confirm exact match)
 	lb := sort.Search(int(window), func(i int) bool {
-		pos := minPos + uint64(i)
-		return cmp(s.rb.buf[pos%s.rb.size]) >= 0
+		return cmpAt(minPos+uint64(i)) >= 0
 	})
+	if lapped {
+		return false, 0, s.rb.writePos.Load()
+	}
 	if lb == int(window) {
 		return false, 0, writePos
 	}
 
 	pos := minPos + uint64(lb)
-	if cmp(s.rb.buf[pos%s.rb.size]) != 0 {
+	match := cmpAt(pos) == 0
+	if lapped {
+		return false, 0, s.rb.writePos.Load()
+	}
+	if !match {
 		return false, 0, writePos
 	}
 	return true, pos, writePos

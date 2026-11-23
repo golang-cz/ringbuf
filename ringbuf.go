@@ -3,9 +3,13 @@ package ringbuf
 import (
 	"cmp"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 )
+
+// ErrClosed is returned by Write() when the ring buffer has been closed.
+var ErrClosed = errors.New("ringbuf: buffer closed")
 
 // New creates a ring buffer for items of type T with the given buffer size.
 //
@@ -21,14 +25,16 @@ func New[T any](size uint64) *RingBuffer[T] {
 		buf:    make([]T, size),
 		size:   size,
 		closed: make(chan struct{}),
+		wake:   make(chan struct{}, 1),
 	}
-	rb.cond = sync.NewCond(&rb.mu)
+	notify := make(chan struct{})
+	rb.notify.Store(&notify)
 	return rb
 }
 
-// RingBuffer is a generic ring buffer that supports multiple concurrent subscribers
-// reading its data at their own pace. Write operations are not thread-safe and must
-// be synchronized by the caller.
+// RingBuffer is a generic ring buffer that supports multiple concurrent writers and
+// multiple concurrent subscribers reading its data at their own pace. See the
+// "Concurrency" section of the README for the guarantees and the caveats.
 type RingBuffer[T any] struct {
 	// Circular buffer storing the data items.
 	buf []T
@@ -39,6 +45,10 @@ type RingBuffer[T any] struct {
 	// Global write cursor (next position to write).
 	writePos atomic.Uint64
 
+	// End position of the in-flight write, published before its slots are filled.
+	// Lets subscribers detect that the writer lapped them in the middle of a copy.
+	writeHead atomic.Uint64
+
 	// Increments when writePos overflows (wraps around).
 	// Used to detect if subscriber can read historical data from end of the buffer.
 	writeEpoch atomic.Uint64
@@ -47,9 +57,20 @@ type RingBuffer[T any] struct {
 	// data will be available for reading.
 	closed chan struct{}
 
-	// Synchronization primitives for waking up subscribers waiting for new data.
-	mu   sync.Mutex
-	cond *sync.Cond
+	// Serializes writers and Close(). Subscribers never take it.
+	writeMu sync.Mutex
+
+	// Token asking the leader subscriber to wake the rest, so Write() stays O(1) in subscribers.
+	wake chan struct{}
+
+	// Closed and replaced to wake all parked subscribers.
+	notify atomic.Pointer[chan struct{}]
+
+	// Keeps the subscriber-written leader flag off the writer's cache line.
+	_ [64]byte
+
+	// Set while one parked subscriber (the leader) listens on wake; only it shares state with the writer.
+	leader atomic.Bool
 }
 
 // SubscribeOpts is a set of options for subscribing to a ring buffer.
@@ -116,16 +137,28 @@ func (rb *RingBuffer[T]) Subscribe(ctx context.Context, opts *SubscribeOpts) *Su
 }
 
 // Write inserts items into the ring buffer and wakes up all waiting subscribers to read them.
-// This method is not concurrent safe, the caller must synchronize calls to Write() and Close().
+// It is safe to call Write() concurrently from multiple goroutines, and concurrently with Close().
 //
-// Subscribers can block waiting for new data. If the writer is idle, call Write() with zero items
-// to wake subscribers so they can observe context cancellation.
+// Write() returns ErrClosed if the ring buffer has been closed. No items are written in that case.
+//
+// Subscribers can block waiting for new data. They observe context cancellation on their own,
+// the writer doesn't need to wake them.
 //
 // NOTE: A large write batch can make subscribers fall behind; if it pushes a subscriber past
 // MaxLag, it will be dropped with ErrTooSlow on the next Read() call. Keep the batch reasonable
 // small, e.g. less than MaxLag and less than 50% of the buffer size to avoid subscriber errors.
-func (rb *RingBuffer[T]) Write(items ...T) {
+func (rb *RingBuffer[T]) Write(items ...T) error {
+	rb.writeMu.Lock()
+
+	select {
+	case <-rb.closed:
+		rb.writeMu.Unlock()
+		return ErrClosed
+	default:
+	}
+
 	pos := rb.writePos.Load()
+	rb.writeHead.Store(pos + uint64(len(items)))
 	for i, item := range items {
 		rb.buf[(pos+uint64(i))%rb.size] = item
 	}
@@ -136,9 +169,23 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 		rb.writeEpoch.Add(1)
 	}
 	rb.writePos.Store(writePos)
+	rb.writeMu.Unlock()
 
-	// Wake up all subscribers.
-	rb.cond.Broadcast()
+	// Hand the O(subscribers) wake-up to the leader subscriber; the writer never pays for it.
+	if rb.leader.Load() {
+		select {
+		case rb.wake <- struct{}{}:
+		default:
+		}
+	}
+
+	return nil
+}
+
+// wakeAll wakes every subscriber parked on the current notify channel.
+func (rb *RingBuffer[T]) wakeAll() {
+	next := make(chan struct{})
+	close(*rb.notify.Swap(&next))
 }
 
 // Close signals the end of the stream and wakes up all waiting subscribers.
@@ -147,12 +194,23 @@ func (rb *RingBuffer[T]) Write(items ...T) {
 // and then stop when errors.Is(err, io.EOF) (end of stream). New subscriptions are
 // still allowed after Close() and they will never block waiting for new data.
 //
-// Same as Write(), this method is not concurrent safe. After calling Close(),
-// the writer must stop producing new data. Writing new data later results in
-// undefined behavior. Calling Close() twice will result in a panic.
+// It is safe to call Close() concurrently with Write() and with subscribers. After Close()
+// returns, no more data lands in the buffer: subsequent Write() calls return ErrClosed.
+//
+// Calling Close() twice panics, same as closing a channel twice.
 func (rb *RingBuffer[T]) Close() {
+	rb.writeMu.Lock()
+	defer rb.writeMu.Unlock()
+
+	// Parked subscribers select on rb.closed, no extra wake-up needed.
 	close(rb.closed)
-	rb.cond.Broadcast()
+}
+
+// intact reports whether slots copied from pos onwards are still the ones written at pos,
+// i.e. no write has reserved slots a full lap ahead. It must be called after the copy.
+func (rb *RingBuffer[T]) intact(pos uint64) (lag uint64, ok bool) {
+	lag = rb.writeHead.Load() - pos
+	return lag, lag <= rb.size
 }
 
 func (rb *RingBuffer[T]) Size() uint64 {

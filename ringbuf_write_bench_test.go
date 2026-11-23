@@ -2,8 +2,10 @@ package ringbuf_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +56,73 @@ func BenchmarkWriteBatchThroughputNoReaders(b *testing.B) {
 				)
 			}
 		})
+	}
+}
+
+// BenchmarkMultiWriterThroughput measures write throughput of multiple concurrent writers
+// writing into the same ring buffer, optionally with readers attached.
+func BenchmarkMultiWriterThroughput(b *testing.B) {
+	bufferSize := uint64(500_000)
+
+	for _, writers := range []int{2, 4, 8} {
+		for _, readers := range []int{0, 100} {
+			b.Run(fmt.Sprintf("writers_%d/readers_%d", writers, readers), func(b *testing.B) {
+				stream := ringbuf.New[uint64](bufferSize)
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				var wgReady, wgReaders sync.WaitGroup
+				wgReady.Add(readers)
+				wgReaders.Add(readers)
+
+				var fellBehind atomic.Int64
+
+				for range readers {
+					sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{MaxLag: bufferSize * 9 / 10})
+
+					go func() {
+						defer wgReaders.Done()
+						wgReady.Done()
+						for range sub.Iter() {
+						}
+						if errors.Is(sub.Err(), ringbuf.ErrTooSlow) {
+							fellBehind.Add(1)
+						}
+					}()
+				}
+				wgReady.Wait()
+
+				// Split b.N across the writers, so ns/op stays the cost of one Write().
+				perWriter := max(b.N/writers, 1)
+
+				b.ResetTimer()
+
+				var wgWriters sync.WaitGroup
+				wgWriters.Add(writers)
+
+				t0 := time.Now()
+				for w := range writers {
+					go func() {
+						defer wgWriters.Done()
+						for range perWriter {
+							stream.Write(uint64(w))
+						}
+					}()
+				}
+				wgWriters.Wait()
+				elapsed := time.Since(t0)
+				b.StopTimer()
+
+				b.ReportMetric(float64(writers*perWriter)/elapsed.Seconds(), "writes/s")
+
+				cancel()
+				stream.Close()
+				wgReaders.Wait()
+
+				b.ReportMetric(float64(fellBehind.Load()), "errors")
+			})
+		}
 	}
 }
 
