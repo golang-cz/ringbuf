@@ -3,8 +3,11 @@ package ringbuf_test
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,7 +19,18 @@ import (
 // Same capacity on both sides: the ring buffer size, and the buffer of every per-reader channel.
 const vsChannelsCapacity = 1024
 
-var vsChannelsReaders = []int{1, 100, 1_000, 10_000}
+// Reader counts for the BenchmarkFanOut* comparisons. Go further with -fanout_readers=100_000,1_000_000;
+// mind that channels then need 8 KB of buffer per reader.
+var flagFanOutReaders = &SliceFlag[int]{
+	Values: []int{1, 100, 1_000, 10_000},
+	Parse: func(value string) (int, error) {
+		return strconv.Atoi(strings.ReplaceAll(strings.TrimSpace(value), "_", ""))
+	},
+}
+
+func init() {
+	flag.Var(flagFanOutReaders, "fanout_readers", "Comma-separated list of reader counts for the ringbuf vs. channels benchmarks (e.g. 1,100,100_000).")
+}
 
 // BenchmarkFanOutWrite compares what it costs the writer to publish one item to N live readers.
 //
@@ -30,7 +44,7 @@ var vsChannelsReaders = []int{1, 100, 1_000, 10_000}
 //	go test -bench=BenchmarkFanOutWrite -run=^$ .
 func BenchmarkFanOutWrite(b *testing.B) {
 	b.Run("ringbuf", func(b *testing.B) {
-		for _, readers := range vsChannelsReaders {
+		for _, readers := range flagFanOutReaders.Values {
 			b.Run(fmt.Sprintf("readers_%d", readers), func(b *testing.B) {
 				stream := ringbuf.New[uint64](vsChannelsCapacity)
 
@@ -73,7 +87,7 @@ func BenchmarkFanOutWrite(b *testing.B) {
 
 	for _, mode := range []string{"channels_blocking", "channels_drop"} {
 		b.Run(mode, func(b *testing.B) {
-			for _, readers := range vsChannelsReaders {
+			for _, readers := range flagFanOutReaders.Values {
 				b.Run(fmt.Sprintf("readers_%d", readers), func(b *testing.B) {
 					chans := make([]chan uint64, readers)
 
@@ -146,7 +160,7 @@ func BenchmarkFanOutDeliver(b *testing.B) {
 	}
 
 	b.Run("ringbuf", func(b *testing.B) {
-		for _, readers := range vsChannelsReaders {
+		for _, readers := range flagFanOutReaders.Values {
 			b.Run(fmt.Sprintf("readers_%d", readers), func(b *testing.B) {
 				stream := ringbuf.New[uint64](vsChannelsCapacity)
 
@@ -189,7 +203,7 @@ func BenchmarkFanOutDeliver(b *testing.B) {
 	})
 
 	b.Run("channels", func(b *testing.B) {
-		for _, readers := range vsChannelsReaders {
+		for _, readers := range flagFanOutReaders.Values {
 			b.Run(fmt.Sprintf("readers_%d", readers), func(b *testing.B) {
 				chans := make([]chan uint64, readers)
 
@@ -357,7 +371,7 @@ func BenchmarkFanOutMemory(b *testing.B) {
 		b.ReportMetric(0, "ns/op")
 	}
 
-	for _, readers := range vsChannelsReaders {
+	for _, readers := range flagFanOutReaders.Values {
 		b.Run(fmt.Sprintf("ringbuf/readers_%d", readers), func(b *testing.B) {
 			before := heap()
 
