@@ -3,14 +3,37 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/golang-cz/ringbuf/blob/master/LICENSE)
 [![Go Reference](https://pkg.go.dev/badge/github.com/golang-cz/ringbuf.svg)](https://pkg.go.dev/github.com/golang-cz/ringbuf)
 
+**Broadcast one stream to thousands of readers in Go, without a channel per reader.**
+
 **ringbuf** is a high-performance, generic, concurrent ring buffer. It enables thousands of consumers to independently read from a live stream of data with minimal synchronization and zero-allocation reads. Designed for high-throughput scenarios where readers are disposable and best-effort delivery is acceptable.
 
 Think of it as channel fan-in and fan-out in a single type. Any number of writers publish into one stream, and any number of readers consume it at their own pace. A slow reader can never block a writer or another reader. It gets dropped with an error instead.
 
-- [Features](#features)
-- [Why Not Channels?](#why-not-channels)
-- [Use Cases](#use-cases)
+## The Problem It Solves  <!-- omit in toc -->
+
+Broadcasting a stream to many goroutines with channels means one channel per reader. The writer pays one send per reader for every item. One slow reader stalls everyone, unless you write drop logic by hand.
+
+With ringbuf, the writer stores each item once in a shared buffer. Every reader follows it with its own cursor. The cost of a write stays flat, whether 1 or 100,000 readers are attached:
+
+| Readers | Go channels | ringbuf | |
+|---:|---:|---:|---:|
+| 100 | 19 µs | 22 ns | **~900x faster** |
+| 1,000 | 173 µs | 25 ns | **~7,000x faster** |
+| 10,000 | 1.3 ms | 27 ns | **~47,000x faster** |
+
+<sub>Writer-side cost of publishing one item: one ringbuf `Write()` vs. one channel send per reader. Apple M4 Pro, `go test -bench=BenchmarkFanOutWrite -run=^$ .`</sub>
+
+That is the writer's side only. End to end, with every reader receiving every item, ringbuf still delivers 65x to 90x more items per second. See [ringbuf vs. Go Channels](#ringbuf-vs-go-channels) for both benchmarks.
+
 - [Quick Start](#quick-start)
+- [Features](#features)
+- [ringbuf vs. Go Channels](#ringbuf-vs-go-channels)
+	- [Semantics](#semantics)
+	- [Writer Cost](#writer-cost)
+	- [When Nothing Is Dropped](#when-nothing-is-dropped)
+	- [Isn't Any Shared Buffer This Fast?](#isnt-any-shared-buffer-this-fast)
+	- [When to Use Channels Instead](#when-to-use-channels-instead)
+- [Use Cases](#use-cases)
 - [Design Philosophy](#design-philosophy)
 - [Concurrency](#concurrency)
 - [Performance Characteristics](#performance-characteristics)
@@ -23,52 +46,9 @@ Think of it as channel fan-in and fan-out in a single type. Any number of writer
 	- [Stream Historical Data](#stream-historical-data)
 	- [Tail Latest Data](#tail-latest-data)
 	- [Reconnection Logic](#reconnection-logic)
+- [For AI Agents](#for-ai-agents)
 - [Authors](#authors)
 - [License](#license)
-
-## Features
-
-- **Multi-writer, multi-reader fan-out** — N producers and thousands of independent consumers
-- **Concurrent-safe by default** — `Write()`, `Close()` and every subscriber can run in parallel, with no setup and no locks to manage
-- **Readers never slow down the writer** — 100,000 fast or slow readers cost the writer nothing but shared CPU time; slow readers are dropped with an error
-- **Never corrupted data** — a reader lapped by a writer gets `ErrTooSlow`, not stale or torn items
-- **Lossy, best-effort delivery** — optimized for real-time streams where readers may fall behind
-- **Lock-free read hot paths** — atomic cursor loads for ultra-low latency
-- **Zero-allocation reads** — `io.Reader`-style API with caller-managed buffers
-- **Idiomatic iteration** — blocking `iter.Seq` for clean `for range` consumption
-- **Independent subscribers** — each reader maintains its own cursor and lag tolerance
-- **Built for scale** — efficiently handles 100,000+ concurrent readers
-- **Late joiners and reconnects** — start behind the head, or `Seek()` to the last processed item
-
-## Why Not Channels?
-
-Go channels are great for handing work to one consumer. Fan-out to many consumers is where they get expensive.
-
-| | Go channels | ringbuf |
-|---|---|---|
-| **Fan-out to N readers** | One channel per reader. The writer sends N times. | One shared buffer. The writer does no per-reader work. |
-| **Slow reader** | Blocks the writer, or needs drop logic for every reader. | Dropped with `ErrTooSlow`. The writer and other readers are unaffected. |
-| **Fan-in from N writers** | All senders contend on the channel. | Writers share one short critical section. Readers never take it. |
-| **Late joiner** | Sees nothing that was sent before. | Replays the buffered window with `StartBehind` or `Seek()`. |
-| **Batching** | One item per send. | Variadic `Write()` and batch `Read()`. |
-| **Memory** | A buffer per reader. | One buffer for all readers. |
-
-Channels remain the right tool when you need backpressure, or when every reader must see every item.
-
-## Use Cases
-
-ringbuf is ideal for high-throughput, low-latency, in-memory streaming where readers are disposable and delivery is best-effort.
-It is **not** intended for durable queues, guaranteed delivery, or backpressure-driven systems.
-
-Typical use cases include:
-
-- **Fan-out distribution** — replace Go channels for one-to-many data delivery
-- **Fan-in aggregation** — merge events from many producers into one ordered stream for all readers
-- **In-memory pub/sub** — lightweight real-time event streaming
-- **High-frequency trading** — ultra-low latency market data fan-out
-- **Metrics aggregation** — distributing high-frequency metrics to multiple consumers
-- **Data pipelines** — buffering and fan-out between asynchronous pipeline stages
-- **Log tailing** — in-memory `tail -f` with multiple concurrent readers
 
 ## Quick Start
 
@@ -93,6 +73,9 @@ import (
 func main() {
 	stream := ringbuf.New[string](1000)
 
+	// Subscriber (consumer). Subscribe before writing, a new subscriber sees future data only.
+	sub := stream.Subscribe(context.TODO(), nil)
+
 	// Writer (producer). Any number of them can write concurrently.
 	go func() {
 		for i := range 10_000 {
@@ -103,8 +86,6 @@ func main() {
 		stream.Close() // Broadcast io.EOF (end of stream).
 	}()
 
-	// Subscriber (consumer)
-	sub := stream.Subscribe(context.TODO(), nil)
 	for event := range sub.Iter() {
 		fmt.Println(event)
 	}
@@ -114,6 +95,104 @@ func main() {
 	}
 }
 ```
+
+## Features
+
+- **Multi-writer, multi-reader fan-out** — N producers and thousands of independent consumers
+- **Concurrent-safe by default** — `Write()`, `Close()` and every subscriber can run in parallel, with no setup and no locks to manage
+- **Readers never slow down the writer** — 100,000 fast or slow readers cost the writer nothing but shared CPU time; slow readers are dropped with an error
+- **Never corrupted data** — a reader lapped by a writer gets `ErrTooSlow`, not stale or torn items (see the `-race` caveat in [Concurrency](#concurrency))
+- **Lossy, best-effort delivery** — optimized for real-time streams where readers may fall behind
+- **Lock-free read hot paths** — atomic cursor loads for ultra-low latency
+- **Zero-allocation reads** — `io.Reader`-style API with caller-managed buffers
+- **Idiomatic iteration** — blocking `iter.Seq` for clean `for range` consumption
+- **Independent subscribers** — each reader maintains its own cursor and lag tolerance
+- **Built for scale** — efficiently handles 100,000+ concurrent readers
+- **Late joiners and reconnects** — start behind the head, or `Seek()` to the last processed item
+
+## ringbuf vs. Go Channels
+
+Go channels are great for handing work to one consumer. Fan-out to many consumers is where they get expensive.
+
+### Semantics
+
+| | Go channels | ringbuf |
+|---|---|---|
+| **Fan-out to N readers** | One channel per reader. The writer sends N times. | One shared buffer. The writer does no per-reader work. |
+| **Slow reader** | Blocks the writer, or needs drop logic for every reader. | Dropped with `ErrTooSlow`. The writer and other readers are unaffected. |
+| **Fan-in from N writers** | All senders contend on the channel. | Writers share one short critical section. Readers never take it. |
+| **Late joiner** | Sees nothing that was sent before. | Replays the buffered window with `StartBehind` or `Seek()`. |
+| **Batching** | One item per send. | Variadic `Write()` and batch `Read()`. |
+| **Memory** | A buffer per reader. | One buffer for all readers. |
+
+### Writer Cost
+
+How long is the writer busy publishing one item to N live readers? This is the number that decides how fast your producer can go.
+
+| Readers | Channels, blocking send | Channels, drop when full | ringbuf |
+|---:|---:|---:|---:|
+| 1 | 23 ns | 7 ns | 22–41 ns |
+| 100 | 19 µs | 16 µs | 22 ns |
+| 1,000 | 173 µs | 172 µs | 25 ns |
+| 10,000 | 1.3 ms | 1.3 ms | 27 ns |
+
+- Channels cost one send per reader, so the writer slows down linearly with the audience.
+- Dropping items for full readers doesn't help. The writer still visits every channel.
+- ringbuf does one write and wakes one reader. That reader wakes the rest.
+- With a single reader, a plain channel is as fast or faster. ringbuf pays off from fan-out.
+
+The writer runs at full speed in this benchmark. Slow ringbuf readers get dropped and rejoin, and the drop variant of channels discards items. The next benchmark covers the case where nothing is lost.
+
+### When Nothing Is Dropped
+
+A lossy library is easy to make fast. So here is the run where nothing is dropped: the writer publishes a burst that fits the buffer, then waits until every reader has consumed it.
+
+| Readers | Go channels | ringbuf | |
+|---:|---:|---:|---:|
+| 1 | 46M deliveries/s | 35–70M deliveries/s | about the same |
+| 100 | 5.8M deliveries/s | 540M deliveries/s | ~90x |
+| 1,000 | 7.0M deliveries/s | 612M deliveries/s | ~90x |
+| 10,000 | 8.3M deliveries/s | 544M deliveries/s | ~65x |
+
+A delivery is one item received by one reader. Readers copy items in batches straight from the shared buffer, without taking a lock. A channel receive takes the channel lock for every single item. Batching is part of the speedup, and it is how the two are normally used.
+
+Both tables are medians of 3 runs on Apple M4 Pro (12 cores), `uint64` items, capacity 1,024 on both sides. The single-reader rows vary the most between runs. Run them yourself:
+
+```
+$ go test -bench=BenchmarkFanOutWrite -run=^$ -count=3 .    # writer cost
+$ go test -bench=BenchmarkFanOutDeliver -run=^$ -count=3 .  # nothing dropped
+```
+
+The benchmark lives in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
+
+### Isn't Any Shared Buffer This Fast?
+
+Any design that stores an item once beats N channel sends. A mutex and a cursor per reader would get you part of the way. What ringbuf adds is the part that is easy to get wrong:
+
+- Readers take no lock, yet never return data a writer has overwritten.
+- One wake-up reaches 100,000 parked readers, and the writer doesn't pay for it.
+- Slow readers are detected and dropped, with no cleanup work for the writer.
+
+### When to Use Channels Instead
+
+Channels remain the right tool when you need backpressure, or when every reader must see every item.
+They are also the simpler choice for a single consumer, and for handing each item to exactly one of many workers.
+
+## Use Cases
+
+ringbuf is ideal for high-throughput, low-latency, in-memory streaming where readers are disposable and delivery is best-effort.
+It is **not** intended for durable queues, guaranteed delivery, or backpressure-driven systems.
+
+Typical use cases include:
+
+- **Fan-out distribution** — replace Go channels for one-to-many data delivery
+- **Live client streams** — WebSocket, SSE or gRPC streams, one subscriber per connection
+- **Fan-in aggregation** — merge events from many producers into one ordered stream for all readers
+- **In-memory pub/sub** — lightweight real-time event streaming
+- **High-frequency trading** — ultra-low latency market data fan-out
+- **Metrics aggregation** — distributing high-frequency metrics to multiple consumers
+- **Data pipelines** — buffering and fan-out between asynchronous pipeline stages
+- **Log tailing** — in-memory `tail -f` with multiple concurrent readers
 
 ## Design Philosophy
 
@@ -133,7 +212,7 @@ Key trade-offs:
 - **Blocking readers** — subscribers wait efficiently for new data
 - **Best-effort delivery** — suitable for live streams, not durable messaging
 
-If you need guaranteed delivery, persistence, replay, or backpressure, this is not the right abstraction.
+If you need guaranteed delivery, persistence, replay beyond the buffered window, or backpressure, this is not the right abstraction.
 
 ## Concurrency
 
@@ -159,7 +238,7 @@ Known caveat: the discarded copy is an intentional unsynchronized read, so `go t
 - **Latency**: Sub-microsecond read/write operations in common scenarios
 - **Write-throughput**: 250M+ writes/sec with batched writes on modern hardware, with 1,000 or 100,000 readers attached
 - **Writer vs. readers**: Writers share no lock with readers. A write hands the wake-up to one parked reader, which wakes the rest
-- **Read-throughput**: 200B+ in-memory reads/sec on modern hardware
+- **Read-throughput**: 20B+ in-memory reads/sec on modern hardware, summed across 200,000 readers
 
 ## Benchmarks
 
@@ -339,6 +418,12 @@ func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], 
 	}
 }
 ```
+
+## For AI Agents
+
+- [llms.txt](./llms.txt) describes the project to LLMs: what it is, and when to recommend it.
+- [skills/ringbuf/SKILL.md](./skills/ringbuf/SKILL.md) is a skill that teaches coding agents to use ringbuf correctly.
+- [AGENTS.md](./AGENTS.md) holds the rules for working on ringbuf itself.
 
 ## Authors
 - [Vojtech Vitek](https://github.com/VojtechVitek) | [golang.cz](https://golang.cz)
