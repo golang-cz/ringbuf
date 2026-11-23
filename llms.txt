@@ -19,6 +19,7 @@ Key facts:
 - Known caveat: a lapped reader's discarded copy is an unsynchronized read, so `go test -race` reports it. Returned data is never torn.
 - Delivery is lossy by design. A reader more than `MaxLag` items behind gets `ErrTooSlow`. It never receives overwritten or torn data.
 - All readers see items in the same order, even with many concurrent writers.
+- Concurrent writers take turns in one short critical section. More writers don't raise total throughput (28 ns per item with 1 writer, 70 ns with 8, at 1,000 readers), but ringbuf stays about 700x ahead of channel fan-out there.
 - Late joiners replay buffered items with `StartBehind`. Reconnecting readers resume with `Seek()` / `SeekAfter()`.
 - After `Close()`, `Write()` returns `ErrClosed`; readers drain the buffer and get `io.EOF`.
 
