@@ -496,3 +496,96 @@ func BenchmarkFanOutLatency(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkFanOutWriters compares fan-in plus fan-out: M writers publish concurrently to 1,000 live readers.
+// It reports the time per item across all writers, so lower means more total throughput.
+//
+//   - ringbuf:  writers share one short critical section, readers never take it
+//   - channels: every writer sends to every reader's channel, so writers contend on all of them
+//
+// As in BenchmarkFanOutWrite the writers run at full speed, so ringbuf readers get lapped and rejoin.
+//
+//	go test -bench=BenchmarkFanOutWriters -run=^$ -count=3 .
+func BenchmarkFanOutWriters(b *testing.B) {
+	const readers = 1_000
+
+	// run splits b.N items across the writers and waits for all of them.
+	run := func(b *testing.B, writers int, write func(item uint64)) {
+		perWriter := max(b.N/writers, 1)
+
+		var wg sync.WaitGroup
+		wg.Add(writers)
+		b.ResetTimer()
+		for range writers {
+			go func() {
+				defer wg.Done()
+				for i := range perWriter {
+					write(uint64(i))
+				}
+			}()
+		}
+		wg.Wait()
+		b.StopTimer()
+	}
+
+	for _, writers := range []int{1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("ringbuf/writers_%d", writers), func(b *testing.B) {
+			stream := ringbuf.New[uint64](vsChannelsCapacity)
+
+			var ready, wg sync.WaitGroup
+			ready.Add(readers)
+			wg.Add(readers)
+			for range readers {
+				go func() {
+					defer wg.Done()
+					sub := stream.Subscribe(context.Background(), nil)
+					ready.Done()
+
+					items := make([]uint64, 64)
+					for {
+						_, err := sub.Read(items)
+						if errors.Is(err, ringbuf.ErrTooSlow) {
+							sub = stream.Subscribe(context.Background(), nil)
+							continue
+						}
+						if err != nil {
+							return
+						}
+					}
+				}()
+			}
+			ready.Wait()
+
+			run(b, writers, func(item uint64) { stream.Write(item) })
+
+			stream.Close()
+			wg.Wait()
+		})
+
+		b.Run(fmt.Sprintf("channels/writers_%d", writers), func(b *testing.B) {
+			chans := make([]chan uint64, readers)
+
+			var wg sync.WaitGroup
+			wg.Add(readers)
+			for i := range chans {
+				chans[i] = make(chan uint64, vsChannelsCapacity)
+				go func() {
+					defer wg.Done()
+					for range chans[i] {
+					}
+				}()
+			}
+
+			run(b, writers, func(item uint64) {
+				for _, ch := range chans {
+					ch <- item
+				}
+			})
+
+			for _, ch := range chans {
+				close(ch)
+			}
+			wg.Wait()
+		})
+	}
+}
