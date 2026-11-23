@@ -31,7 +31,7 @@ That is the writer's side only. End to end, with every reader receiving every it
 	- [Semantics](#semantics)
 	- [Writer Cost](#writer-cost)
 	- [When Nothing Is Dropped](#when-nothing-is-dropped)
-	- [Isn't Any Shared Buffer This Fast?](#isnt-any-shared-buffer-this-fast)
+	- [What You'd Have to Get Right Yourself](#what-youd-have-to-get-right-yourself)
 	- [When to Use Channels Instead](#when-to-use-channels-instead)
 - [Use Cases](#use-cases)
 - [Design Philosophy](#design-philosophy)
@@ -127,7 +127,7 @@ Go channels are great for handing work to one consumer. Fan-out to many consumer
 
 ### Writer Cost
 
-How long is the writer busy publishing one item to N live readers? This is the number that decides how fast your producer can go.
+How long is the writer busy publishing one item to N live readers? This is producer-side cost only. End-to-end delivery is measured in the next section.
 
 | Readers | Channels, blocking send | Channels, drop when full | ringbuf |
 |---:|---:|---:|---:|
@@ -154,7 +154,7 @@ A lossy library is easy to make fast. So here is the run where nothing is droppe
 | 1,000 | 7.0M deliveries/s | 612M deliveries/s | ~90x |
 | 10,000 | 8.3M deliveries/s | 544M deliveries/s | ~65x |
 
-A delivery is one item received by one reader. Readers copy items in batches straight from the shared buffer, without taking a lock. A channel receive takes the channel lock for every single item. Batching is part of the speedup, and it is how the two are normally used.
+A delivery is one item received by one reader. Readers copy items in batches straight from the shared buffer, without taking a lock. A channel receive takes the channel lock for every single item. The benchmark uses per-item channel receives and batched ringbuf reads, so batching is part of the speedup.
 
 Both tables are medians of 3 runs on Apple M4 Pro (12 cores), `uint64` items, capacity 1,024 on both sides. The single-reader rows vary the most between runs. Run them yourself:
 
@@ -165,9 +165,9 @@ $ go test -bench=BenchmarkFanOutDeliver -run=^$ -count=3 .  # nothing dropped
 
 The benchmark lives in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
 
-### Isn't Any Shared Buffer This Fast?
+### What You'd Have to Get Right Yourself
 
-Any design that stores an item once beats N channel sends. A mutex and a cursor per reader would get you part of the way. What ringbuf adds is the part that is easy to get wrong:
+Storing an item once avoids the writer's send loop, so a hand-rolled shared buffer beats channels at large fan-out too. A mutex and a cursor per reader would get you part of the way. What ringbuf adds is the part that is easy to get wrong:
 
 - Readers take no lock, yet never return data a writer has overwritten.
 - One wake-up reaches 100,000 parked readers, and the writer doesn't pay for it.
@@ -175,7 +175,7 @@ Any design that stores an item once beats N channel sends. A mutex and a cursor 
 
 ### When to Use Channels Instead
 
-Channels remain the right tool when you need backpressure, or when every reader must see every item.
+Channels remain the right tool when you need backpressure: a producer that slows down so that no reader ever misses an item.
 They are also the simpler choice for a single consumer, and for handing each item to exactly one of many workers.
 
 ## Use Cases
@@ -227,7 +227,7 @@ Any number of writers can write to the same ring buffer while any number of subs
 
 Subscribers copy data without taking a lock. If a writer laps a subscriber in the middle of a copy, that `Read()` discards the copy and returns `ErrTooSlow`. It never returns overwritten or torn items. `Seek()` falls back to the tail in the same situation.
 
-Known caveat: the discarded copy is an intentional unsynchronized read, so `go test -race` reports it when a subscriber gets lapped mid-copy.
+Known caveat: the discarded copy, and the item reads inside `Seek()`, are intentional unsynchronized reads, so `go test -race` reports them when a subscriber gets lapped mid-copy.
 
 ## Performance Characteristics
 

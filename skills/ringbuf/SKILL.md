@@ -69,7 +69,8 @@ Resume after a reconnect, when items carry an increasing key:
 
 ```go
 found := sub.SeekAfter(func(ev Event) int { return cmp.Compare(ev.ID, lastSeenID) })
-// found == false: lastSeenID left the buffer. The subscriber is at the tail; tell the client it has a gap.
+// found == false: no exact match is buffered. The subscriber now tails future data only.
+// lastSeenID is either too old (the client has a gap) or not written yet.
 ```
 
 ## Rules
