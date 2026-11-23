@@ -7,8 +7,6 @@
 
 **ringbuf** is a generic, concurrent, in-memory ring buffer. Any number of writers publish into one stream, and any number of subscribers consume it at their own pace. Think of it as channel fan-in and fan-out in a single type, built for live streams where delivery is best-effort.
 
-![ringbuf against Go channels at 100,000 subscribers: 1,000 messages per second where channels manage 20, 140,000 times less writer time, 108 times less memory.](./docs/ringbuf-vs-channels.svg)
-
 ## Why ringbuf over Go Channels  <!-- omit in toc -->
 
 - **The writer never blocks.** It never waits for a subscriber, however many there are and however slow they get.
@@ -31,9 +29,6 @@ Fan-out with Go channels works the other way around. Every subscriber needs its 
 
 <sub>Ranges cover two machines, Apple M4 Pro and Apple M5. Every number comes from a benchmark in this repository, see [ringbuf vs. Go Channels](#ringbuf-vs-go-channels). The chart shows the M4 Pro run.</sub>
 
-- [When to Use It](#when-to-use-it)
-- [Quick Start](#quick-start)
-- [Features](#features)
 - [ringbuf vs. Go Channels](#ringbuf-vs-go-channels)
 	- [Slow Subscribers](#slow-subscribers)
 	- [Memory](#memory)
@@ -42,6 +37,9 @@ Fan-out with Go channels works the other way around. Every subscriber needs its 
 	- [Very Slow Connections](#very-slow-connections)
 	- [Many Writers](#many-writers)
 	- [What You'd Have to Get Right Yourself](#what-youd-have-to-get-right-yourself)
+- [When to Use It](#when-to-use-it)
+- [Quick Start](#quick-start)
+- [Features](#features)
 - [Concurrency](#concurrency)
 - [Design Philosophy](#design-philosophy)
 - [Benchmarks](#benchmarks)
@@ -57,87 +55,9 @@ Fan-out with Go channels works the other way around. Every subscriber needs its 
 - [Authors](#authors)
 - [License](#license)
 
-## When to Use It
-
-Use ringbuf when all of these hold:
-
-- **Many subscribers in one process.** Hundreds to 100,000+, fed by one or many writers.
-- **Subscribers need recent data, not every item.**
-- **A slow subscriber must never hurt the others.**
-
-Good fits:
-
-- WebSocket, SSE or gRPC streams: live prices, block or transaction feeds, game state, notifications.
-- Dashboards and tailing clients that follow the latest updates.
-- In-process pub/sub for events, metrics or logs.
-- Any feed where a client on a bad connection should be dropped, not waited for.
-
-Use something else for:
-
-- **Work queues**, where each item goes to one worker. Use a channel.
-- **Guaranteed delivery**, where every subscriber must see every item. Use channels with backpressure, or a durable log such as Kafka or NATS JetStream.
-- **A handful of subscribers.** A channel per subscriber is simpler there, and as fast or faster.
-- **Fan-out across processes.** ringbuf lives in memory, in one process.
-
-## Quick Start
-
-```bash
-go get github.com/golang-cz/ringbuf
-```
-
-```go
-package main
-
-import (
-	"context"
-	"errors"
-	"fmt"
-	"io"
-	"log"
-	"time"
-
-	"github.com/golang-cz/ringbuf"
-)
-
-func main() {
-	stream := ringbuf.New[string](1000)
-
-	// Subscriber. Subscribe before writing, a new subscriber sees future data only.
-	sub := stream.Subscribe(context.TODO(), nil)
-
-	// Writer. Any number of them can write concurrently.
-	go func() {
-		for i := range 10_000 {
-			stream.Write(fmt.Sprintf("event-%d", i))
-			time.Sleep(100 * time.Microsecond) // Simulate i/o latency.
-		}
-
-		stream.Close() // Broadcast io.EOF (end of stream).
-	}()
-
-	for event := range sub.Iter() {
-		fmt.Println(event)
-	}
-	
-	if err := sub.Err(); !errors.Is(err, io.EOF) {
-		log.Fatal(err)
-	}
-}
-```
-
-## Features
-
-- **Concurrent-safe by default** — `Write()`, `Close()` and every subscriber can run in parallel, with no setup and no locks to manage
-- **Never corrupted data** — a subscriber lapped by a writer gets `ErrTooSlow`, not stale or torn items (see the `-race` caveat in [Concurrency](#concurrency))
-- **Batching** — variadic `Write()` and batch `Read()`
-- **Zero-allocation reads** — `io.Reader`-style `Read()` into caller-managed buffers
-- **Idiomatic iteration** — blocking `iter.Seq` for clean `for range` consumption
-- **Lock-free read hot paths** — atomic cursor loads for ultra-low latency
-- **Zero dependencies** — standard library only
-
 ## ringbuf vs. Go Channels
 
-![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 20 messages per second and seconds of delay. With nobody slow, channels need 20 ms per message and 926 MB, ringbuf 0.1 microseconds and 8.6 MB.](./docs/ringbuf-vs-channels-charts.svg)
+![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 20 messages per second and seconds of delay. With nobody slow, channels need 20 ms per message and 926 MB, ringbuf 0.1 microseconds and 8.6 MB.](./docs/ringbuf-vs-channels.svg)
 
 The numbers behind the charts are in [Very Slow Connections](#very-slow-connections), [Writer Cost](#writer-cost) and [Memory](#memory).
 
@@ -300,6 +220,84 @@ Storing an item once avoids the writer's send loop, so a hand-rolled shared buff
 - Subscribers take no lock, yet never return data a writer has overwritten.
 - One wake-up reaches 100,000 parked subscribers, and the writer doesn't pay for it.
 - Slow subscribers are detected and dropped, with no cleanup work for the writer.
+
+## When to Use It
+
+Use ringbuf when all of these hold:
+
+- **Many subscribers in one process.** Hundreds to 100,000+, fed by one or many writers.
+- **Subscribers need recent data, not every item.**
+- **A slow subscriber must never hurt the others.**
+
+Good fits:
+
+- WebSocket, SSE or gRPC streams: live prices, block or transaction feeds, game state, notifications.
+- Dashboards and tailing clients that follow the latest updates.
+- In-process pub/sub for events, metrics or logs.
+- Any feed where a client on a bad connection should be dropped, not waited for.
+
+Use something else for:
+
+- **Work queues**, where each item goes to one worker. Use a channel.
+- **Guaranteed delivery**, where every subscriber must see every item. Use channels with backpressure, or a durable log such as Kafka or NATS JetStream.
+- **A handful of subscribers.** A channel per subscriber is simpler there, and as fast or faster.
+- **Fan-out across processes.** ringbuf lives in memory, in one process.
+
+## Quick Start
+
+```bash
+go get github.com/golang-cz/ringbuf
+```
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"time"
+
+	"github.com/golang-cz/ringbuf"
+)
+
+func main() {
+	stream := ringbuf.New[string](1000)
+
+	// Subscriber. Subscribe before writing, a new subscriber sees future data only.
+	sub := stream.Subscribe(context.TODO(), nil)
+
+	// Writer. Any number of them can write concurrently.
+	go func() {
+		for i := range 10_000 {
+			stream.Write(fmt.Sprintf("event-%d", i))
+			time.Sleep(100 * time.Microsecond) // Simulate i/o latency.
+		}
+
+		stream.Close() // Broadcast io.EOF (end of stream).
+	}()
+
+	for event := range sub.Iter() {
+		fmt.Println(event)
+	}
+	
+	if err := sub.Err(); !errors.Is(err, io.EOF) {
+		log.Fatal(err)
+	}
+}
+```
+
+## Features
+
+- **Concurrent-safe by default** — `Write()`, `Close()` and every subscriber can run in parallel, with no setup and no locks to manage
+- **Never corrupted data** — a subscriber lapped by a writer gets `ErrTooSlow`, not stale or torn items (see the `-race` caveat in [Concurrency](#concurrency))
+- **Batching** — variadic `Write()` and batch `Read()`
+- **Zero-allocation reads** — `io.Reader`-style `Read()` into caller-managed buffers
+- **Idiomatic iteration** — blocking `iter.Seq` for clean `for range` consumption
+- **Lock-free read hot paths** — atomic cursor loads for ultra-low latency
+- **Zero dependencies** — standard library only
 
 ## Concurrency
 
