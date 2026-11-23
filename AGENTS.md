@@ -17,7 +17,7 @@ Every change is judged against these. A change that breaks one is a regression, 
 ```
 go test ./...                               # unit tests
 go test -race ./...                         # ringbuf_wrap_test.go is excluded under -race on purpose
-go test -bench=BenchmarkFanOut -run=^$ .    # ringbuf vs. Go channels: writer cost, slow readers, memory, delivery
+go test -bench=BenchmarkFanOut -run=^$ .    # ringbuf vs. Go channels: writer cost, slow readers, memory, reader latency
 go test -bench=. -run=^$ ./...              # everything, as CI runs it
 ```
 
