@@ -21,6 +21,8 @@ go test -bench=BenchmarkFanOut -run=^$ .    # ringbuf vs. Go channels: writer co
 go test -bench=. -run=^$ ./...              # everything, as CI runs it
 ```
 
+Release: `gh release create vX.Y.Z --generate-notes --notes-file .github/release-header.md`. The header puts the skill install command above the generated notes.
+
 CI runs the tests and then all benchmarks on Linux with the Go version from `go.mod`.
 
 ## Invariants in the code
