@@ -82,6 +82,8 @@ Use something else for:
 go get github.com/golang-cz/ringbuf
 ```
 
+A live feed with one writer and three clients that connect at different times:
+
 ```go
 package main
 
@@ -91,6 +93,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/golang-cz/ringbuf"
@@ -99,28 +102,43 @@ import (
 func main() {
 	stream := ringbuf.New[string](1000)
 
-	// Subscriber. With nil opts it sees future data only, so subscribe before writing.
-	sub := stream.Subscribe(context.TODO(), nil)
-
-	// Writer. Any number of them can write concurrently.
+	// Writer: publishes a live feed. It never waits for subscribers.
 	go func() {
-		for i := range 10_000 {
-			stream.Write(fmt.Sprintf("event-%d", i))
-			time.Sleep(100 * time.Microsecond) // Simulate i/o latency.
+		for i := range 20 {
+			stream.Write(fmt.Sprintf("price-%d", i))
+			time.Sleep(50 * time.Millisecond)
 		}
-
-		stream.Close() // Broadcast io.EOF (end of stream).
+		stream.Close() // End of stream. Subscribers drain the buffer and get io.EOF.
 	}()
 
-	for event := range sub.Iter() {
-		fmt.Println(event)
-	}
+	// Subscribers: one per client, each in its own goroutine. Clients connect at any time.
+	var wg sync.WaitGroup
+	for client := range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Duration(client) * 300 * time.Millisecond) // Connect later than the previous client.
 
-	if err := sub.Err(); !errors.Is(err, io.EOF) {
-		log.Fatal(err)
+			// In a server, pass the connection's context, so a disconnect ends the subscription.
+			sub := stream.Subscribe(context.Background(), &ringbuf.SubscribeOpts{
+				StartBehind: 5, // Replay the last 5 items first. With 0 (or nil opts), new items only.
+			})
+
+			for event := range sub.Iter() {
+				fmt.Printf("client-%d: %s\n", client, event)
+			}
+
+			if err := sub.Err(); !errors.Is(err, io.EOF) {
+				// ringbuf.ErrTooSlow: this client fell too far behind and was dropped. Nobody else noticed.
+				log.Printf("client-%d: %v", client, err)
+			}
+		}()
 	}
+	wg.Wait()
 }
 ```
+
+`client-2` connects about 600 ms in. It first replays the last 5 buffered items, around `price-7` to `price-11`, then follows the live feed.
 
 ## ringbuf vs. Go Channels
 
