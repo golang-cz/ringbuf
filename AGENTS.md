@@ -21,11 +21,7 @@ go test -bench=BenchmarkFanOut -run=^$ .    # ringbuf vs. Go channels: writer co
 go test -bench=. -run=^$ ./...              # everything, as CI runs it
 ```
 
-Release: the header goes above the generated notes, with `<VERSION>` replaced by the tag.
-
-```
-TAG=vX.Y.Z; sed "s/<VERSION>/$TAG/g" .github/release-header.md | gh release create "$TAG" --generate-notes --notes-file -
-```
+Release: publish it on GitHub with "Generate release notes". The `release-notes.yml` workflow then prepends `.github/release-header.md`, with `<VERSION>` replaced by the tag.
 
 CI runs the tests and then all benchmarks on Linux with the Go version from `go.mod`.
 
