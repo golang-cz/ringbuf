@@ -24,9 +24,6 @@
 - **Many writers, one stream.** Any number of writers publish concurrently. Every subscriber sees the same order.
 - **Late joiners and reconnects catch up.** Items stay in the buffer until they are overwritten. A new subscriber can start up to `StartBehind` items back. A reconnecting client can `Seek()` to its last processed item.
 
-<details>
-<summary>Table of contents</summary>
-
 - [Key Features](#key-features)
 - [When to Use It](#when-to-use-it)
 - [Quick Start](#quick-start)
@@ -54,8 +51,6 @@
 - [For AI Agents](#for-ai-agents)
 - [Authors](#authors)
 - [License](#license)
-
-</details>
 
 ## When to Use It
 
