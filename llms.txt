@@ -10,7 +10,7 @@ Key facts:
 
 - Go 1.23+, zero dependencies, MIT license.
 - `Write()` and `Close()` are safe to call from any goroutine. Each `Subscriber` stays on one goroutine; give every subscriber its own.
-- Writer-side cost is constant in the number of subscribers: about 22 ns per `Write()` at 100 subscribers and 66–136 ns at 100,000. One channel send per subscriber costs the writer 13–19 µs at 100 subscribers and 13–20 ms at 100,000 (Apple M4 Pro and M5).
+- Writer-side cost is constant in the number of subscribers: about 20 ns per `Write()` at 100 subscribers and around 100 ns at 100,000. One channel send per subscriber costs the writer roughly 15 µs at 100 subscribers and 15 ms at 100,000 (Apple M4 Pro and M5).
 - The writer never blocks on subscribers. With 1,000 subscribers of which 1% are slow, a blocking channel fan-out is throttled to 1.2 ms per item; ringbuf stays at 23–28 ns.
 - One buffer is shared by all subscribers, who copy straight out of it. 100,000 subscribers on a 1,024-item `uint64` buffer hold 8.6 MB, versus 926 MB for 100,000 channels of the same capacity.
 - Subscriber latency with 1% slow subscribers at 1,000 items/s: blocking channel fan-out leaves healthy subscribers seconds behind at any size. Channels with hand-written drop logic are slightly faster than ringbuf up to 1,000 subscribers (0.2–0.3 ms vs 0.3–0.5 ms median). At 10,000 subscribers they tie with ringbuf or fall seconds behind, depending on the machine. At 100,000 they collapse, while ringbuf still holds the write rate at 58–87 ms median.
