@@ -1,0 +1,24 @@
+name: Release notes
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  header:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepend install header
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release view "$TAG" --json body -q .body > body.md
+          # Re-runs and edited releases must not get a second header.
+          if grep -q 'go get github.com/golang-cz/ringbuf@' body.md; then exit 0; fi
+          { sed "s/<VERSION>/$TAG/g" .github/release-header.md; echo; cat body.md; } > notes.md
+          gh release edit "$TAG" --notes-file notes.md

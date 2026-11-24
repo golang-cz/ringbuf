@@ -1,7 +1,7 @@
 ## Install Go module
 
 ```
-go get github.com/golang-cz/ringbuf
+go get github.com/golang-cz/ringbuf@<VERSION>
 ```
 
 ```go
