@@ -15,15 +15,6 @@
 
 <sub>Throughput: 1 in 10 subscribers is on a slow connection. Writes and memory: every subscriber keeps up. [How it's measured](#benchmarks-vs-go-channels).</sub>
 
-## Key Features
-
-- **The writer never blocks.** It never waits for a subscriber, however many there are and however slow they get.
-- **Slow subscribers can't hurt anyone.** A subscriber that falls too far behind gets `ErrTooSlow` and can rejoin. The writer and the other subscribers don't notice.
-- **One buffer, shared by all subscribers.** Subscribers copy straight out of it. There are no per-subscriber queues, so a slow or bursty subscriber costs no extra memory.
-- **Fan-out cost stays almost flat.** A write takes about 20 ns with 100 subscribers and around 100 ns with 100,000. With channels it grows with every subscriber.
-- **Many writers, one stream.** Any number of writers publish concurrently. Every subscriber sees the same order.
-- **Late joiners and reconnects catch up.** Items stay in the buffer until they are overwritten. A new subscriber can start up to `StartBehind` items back. A reconnecting client can `Seek()` to its last processed item.
-
 - [Key Features](#key-features)
 - [When to Use It](#when-to-use-it)
 - [Quick Start](#quick-start)
@@ -51,6 +42,15 @@
 - [For AI Agents](#for-ai-agents)
 - [Authors](#authors)
 - [License](#license)
+
+## Key Features
+
+- **The writer never blocks.** It never waits for a subscriber, however many there are and however slow they get.
+- **Slow subscribers can't hurt anyone.** A subscriber that falls too far behind gets `ErrTooSlow` and can rejoin. The writer and the other subscribers don't notice.
+- **One buffer, shared by all subscribers.** Subscribers copy straight out of it. There are no per-subscriber queues, so a slow or bursty subscriber costs no extra memory.
+- **Fan-out cost stays almost flat.** A write takes about 20 ns with 100 subscribers and around 100 ns with 100,000. With channels it grows with every subscriber.
+- **Many writers, one stream.** Any number of writers publish concurrently. Every subscriber sees the same order.
+- **Late joiners and reconnects catch up.** Items stay in the buffer until they are overwritten. A new subscriber can start up to `StartBehind` items back. A reconnecting client can `Seek()` to its last processed item.
 
 ## When to Use It
 
