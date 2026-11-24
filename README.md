@@ -528,6 +528,12 @@ func reconnectExample(ctx context.Context, stream *ringbuf.RingBuffer[Message], 
 - [skills/ringbuf/SKILL.md](./skills/ringbuf/SKILL.md) is a skill that teaches coding agents to use ringbuf correctly.
 - [AGENTS.md](./AGENTS.md) holds the rules for working on ringbuf itself.
 
+Install the skill into your coding agent (Claude Code, Codex, Cursor, and others):
+
+```
+npx skills add golang-cz/ringbuf
+```
+
 ## Authors
 - [Vojtech Vitek](https://github.com/VojtechVitek) | [golang.cz](https://golang.cz)
 
