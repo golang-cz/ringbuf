@@ -29,7 +29,7 @@ Minimal usage:
 ```go
 stream := ringbuf.New[string](1000)
 
-// Subscribe before writing: a new subscriber sees future data only.
+// With nil opts the subscriber sees future data only, so subscribe before writing.
 sub := stream.Subscribe(ctx, nil)
 
 go func() {
