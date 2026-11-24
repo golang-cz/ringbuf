@@ -13,7 +13,7 @@
 
 ![50 times the throughput: 1,000 messages per second against 20. 140,000 times faster writes: 0.1 microseconds per message against 20 ms. 108 times lower memory use: 8.6 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
 
-<sub>Throughput is measured with 1 in 10 subscribers on a slow connection. Write time and memory are measured with every subscriber keeping up. See [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels).</sub>
+<sub>Throughput: 1 in 10 subscribers is on a slow connection. Writes and memory: every subscriber keeps up. [How it's measured](#benchmarks-vs-go-channels).</sub>
 
 ## Key Features
 
