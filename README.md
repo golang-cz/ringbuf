@@ -99,7 +99,7 @@ import (
 func main() {
 	stream := ringbuf.New[string](1000)
 
-	// Subscriber. Subscribe before writing, a new subscriber sees future data only.
+	// Subscriber. With nil opts it sees future data only, so subscribe before writing.
 	sub := stream.Subscribe(context.TODO(), nil)
 
 	// Writer. Any number of them can write concurrently.
