@@ -115,7 +115,7 @@ func main() {
 	for event := range sub.Iter() {
 		fmt.Println(event)
 	}
-	
+
 	if err := sub.Err(); !errors.Is(err, io.EOF) {
 		log.Fatal(err)
 	}
@@ -228,8 +228,7 @@ sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
 
 ### Reconnection Logic
 
-The `Seek()` method allows subscribers to fast-forward to a specific position efficiently without locking
-(it uses atomic loads of the writer cursor and reads already-written items from the buffer).
+The `Seek()` and `SeekAfter()` methods let a subscriber fast-forward to a specific position efficiently without locking (they use atomic loads of the writer cursor and read already-written items from the buffer).
 
 ```go
 type Message struct {
@@ -501,7 +500,7 @@ ok  	github.com/golang-cz/ringbuf	74.387s
 
 </details>
 
-We can see that up to 200,000 subscribers were able to keep up with the writer and read a total of ~20 billion messages/sec with no subscriber falling behind (`errors=0`). However, at 1,000,000 subscribers, we can see that the system was overloaded and the overall throughput degraded. The buffer size was very generous (200,000 items) and exceeded the number of writes, so we didn't see any errors.
+We can see that up to 200,000 subscribers were able to keep up with the writer and read a total of ~20 billion messages/sec with no subscriber falling behind (`errors=0`). However, from 500,000 subscribers on, we can see that the system was overloaded and the overall throughput degraded. The buffer size was very generous (200,000 items) and exceeded the number of writes, so we didn't see any errors.
 
 However, when we decrease the buffer size from 200,000 to just 10,000 items:
 
@@ -530,7 +529,7 @@ ok  	github.com/golang-cz/ringbuf	56.813s
 
 </details>
 
-We can see that we were able to handle up to 10,000 subscribers with maximum throughput and no errors. However, at 50,000 subscribers, we start seeing errors (subscribers falling behind). We can see that our total read throughput peaked at ~19 billion messages/sec.
+We can see that we were able to handle up to 10,000 subscribers with maximum throughput and no errors. However, at 50,000 subscribers, we start seeing errors (subscribers falling behind). We can see that our total read throughput peaked at ~1.9 billion messages/sec.
 
 ## For AI Agents
 
