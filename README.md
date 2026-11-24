@@ -9,7 +9,11 @@
 
 ## Fan-Out to Thousands of Subscribers, Faster and Leaner Than Go Channels  <!-- omit in toc -->
 
-![At 100,000 subscribers, ringbuf has 50 times the throughput when 1 in 10 subscribers is slow (1,000 messages per second against 20), 140,000 times faster writes (0.1 microseconds per message against 20 ms) and 108 times lower memory use (8.6 MB against 926 MB), compared to Go channels.](./docs/ringbuf-vs-channels-summary.svg)
+**ringbuf vs. Go channels at 100,000 subscribers:**
+
+![50 times the throughput: 1,000 messages per second against 20. 140,000 times faster writes: 0.1 microseconds per message against 20 ms. 108 times lower memory use: 8.6 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
+
+<sub>Throughput is measured with 1 in 10 subscribers on a slow connection. Write time and memory are measured with every subscriber keeping up. See [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels).</sub>
 
 ## Key Features
 
