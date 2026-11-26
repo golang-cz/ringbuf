@@ -156,10 +156,14 @@ func (s *Subscriber[T]) readAvailable(pos uint64, writePos uint64, items []T) (i
 //   - err != nil: caller should return (0, err)
 //   - err == nil: caller should drain remaining buffered items using the returned writePos
 func (s *Subscriber[T]) checkEnd(pos uint64) (writePos uint64, err error, ok bool) {
+	// One channel per select: a two-case select locks both channels, and every subscriber shares rb.closed.
 	select {
 	case <-s.ctx.Done():
 		return 0, s.ctx.Err(), true
-	case <-s.rb.closed:
+	default:
+	}
+
+	if s.rb.isClosed() {
 		// Drain any remaining buffered items before returning EOF.
 		// Re-read the writePos to avoid races.
 		writePos = s.rb.writePos.Load()
@@ -167,9 +171,9 @@ func (s *Subscriber[T]) checkEnd(pos uint64) (writePos uint64, err error, ok boo
 			return writePos, nil, true
 		}
 		return 0, errEndOfStream, true
-	default:
-		return 0, nil, false
 	}
+
+	return 0, nil, false
 }
 
 // Seek positions the subscriber at the matched item using a lock-free binary search within

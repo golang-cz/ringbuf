@@ -73,14 +73,18 @@ func BenchmarkThroughput(b *testing.B) {
 			start := make(chan struct{})
 			var wgReady sync.WaitGroup
 			var wgReaders sync.WaitGroup
+			var wgWarm sync.WaitGroup
 			wgReady.Add(subs)
 			wgReaders.Add(subs)
+			wgWarm.Add(subs)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
 			for i := range subs {
-				sub := stream.Subscribe(ctx, &ringbuf.SubscribeOpts{
+				// One context per subscriber, as with one context per connection in a real server.
+				subCtx, subCancel := context.WithCancel(ctx)
+				sub := stream.Subscribe(subCtx, &ringbuf.SubscribeOpts{
 					Name:          fmt.Sprintf("sub-%d", i),
 					MaxLag:        *flagBufferSize * 9 / 10, // Allow readers to fall behind, but fail fast if they can't keep up.
 					IterBatchSize: uint(*flagReadBatch),
@@ -88,6 +92,17 @@ func BenchmarkThroughput(b *testing.B) {
 
 				go func() {
 					defer wgReaders.Done()
+					defer subCancel()
+
+					// Count locally: one shared counter bumped on every Read() was 89% of the CPU profile.
+					var delivered uint64
+					warmed := false
+					defer func() {
+						deliveredReads.Add(delivered)
+						if !warmed {
+							wgWarm.Done()
+						}
+					}()
 
 					items := make([]uint64, *flagReadBatch)
 					wgReady.Done()
@@ -103,7 +118,11 @@ func BenchmarkThroughput(b *testing.B) {
 							recordErr(err) // incl. ErrTooSlow
 							return
 						}
-						deliveredReads.Add(uint64(n))
+						delivered += uint64(n)
+						if !warmed && delivered >= uint64(*flagWriteBatch) {
+							warmed = true
+							wgWarm.Done()
+						}
 					}
 				}()
 			}
@@ -124,9 +143,7 @@ func BenchmarkThroughput(b *testing.B) {
 			// Warm up: every reader parks once, so its one-time wait-queue allocations stay out of allocs/op.
 			stream.Write(slices.Repeat([]uint64{0}, int(*flagWriteBatch))...)
 			warmupReads := uint64(subs) * uint64(*flagWriteBatch)
-			for deliveredReads.Load() < warmupReads && fellBehind.Load() == 0 {
-				time.Sleep(time.Millisecond)
-			}
+			wgWarm.Wait()
 			time.Sleep(50 * time.Millisecond)
 
 			// Produce items: Write batch of items b.N times
