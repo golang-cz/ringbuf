@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 360" width="880" height="360" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Highest sustained rate with 1 in 10 subscribers slow. At 1,000 subscribers ringbuf sustains 128,000 messages per second and Go channels 14,700. At 10,000 subscribers 90,500 against 420. At 100,000 subscribers 12,300 against 35.">
+<text x="40" y="30" font-size="17" font-weight="600" fill="#768390">Highest sustained rate, messages per second</text>
+<text x="40" y="50" font-size="12" fill="#768390">1 in 10 subscribers is slow. Fast subscribers get at least 99% of the messages, under one second old. Log scale.</text>
+<g stroke="#768390" stroke-opacity="0.25" stroke-width="1">
+<line x1="110" y1="82" x2="840" y2="82"/><line x1="110" y1="128" x2="840" y2="128"/><line x1="110" y1="174" x2="840" y2="174"/><line x1="110" y1="220" x2="840" y2="220"/><line x1="110" y1="266" x2="840" y2="266"/><line x1="110" y1="312" x2="840" y2="312"/>
+</g>
+<g font-size="12" fill="#768390" text-anchor="end">
+<text x="100" y="86">1,000,000</text><text x="100" y="132">100,000</text><text x="100" y="178">10,000</text><text x="100" y="224">1,000</text><text x="100" y="270">100</text><text x="100" y="316">10</text>
+</g>
+<g font-size="13" fill="#768390" text-anchor="middle">
+<text x="220" y="336">1,000 subscribers</text><text x="475" y="336">10,000 subscribers</text><text x="730" y="336">100,000 subscribers</text>
+</g>
+<g stroke="#768390" stroke-opacity="0.6" stroke-width="1.5" stroke-dasharray="3 4">
+<line x1="220" y1="131" x2="220" y2="158"/><line x1="475" y1="138" x2="475" y2="229"/><line x1="730" y1="178" x2="730" y2="279"/>
+</g>
+<polyline points="220,123 475,130 730,170" fill="none" stroke="#2da44e" stroke-width="3" stroke-linejoin="round"/>
+<polyline points="220,166 475,237 730,287" fill="none" stroke="#e5534b" stroke-width="3" stroke-linejoin="round"/>
+<g fill="#2da44e"><circle cx="220" cy="123" r="5.5"/><circle cx="475" cy="130" r="5.5"/><circle cx="730" cy="170" r="5.5"/></g>
+<g fill="#e5534b"><circle cx="220" cy="166" r="5.5"/><circle cx="475" cy="237" r="5.5"/><circle cx="730" cy="287" r="5.5"/></g>
+<g font-size="14" font-weight="600" fill="#2da44e" text-anchor="middle">
+<text x="220" y="108">128,000</text><text x="475" y="115">90,500</text><text x="730" y="155">12,300</text>
+</g>
+<g font-size="14" font-weight="600" fill="#e5534b" text-anchor="middle">
+<text x="220" y="188">14,700</text><text x="475" y="259">420</text><text x="730" y="309">35</text>
+</g>
+<g font-size="18" font-weight="700" fill="#2da44e">
+<text x="232" y="151">9x</text><text x="487" y="190">215x</text><text x="742" y="235">350x</text>
+</g>
+<g font-size="14" font-weight="600">
+<text x="800" y="140" fill="#2da44e" text-anchor="middle">ringbuf</text>
+<text x="800" y="268" fill="#e5534b" text-anchor="middle">Go channels</text>
+</g>
+</svg>

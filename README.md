@@ -523,6 +523,8 @@ The search starts at 1,000 items per second, doubles until a rate fails, then na
 
 One search per cell on an Apple M4 Pro, with 1 in 10 subscribers slow and a 100,000-item ringbuf buffer, as in [Higher Message Rates](#higher-message-rates):
 
+![Highest sustained rate with 1 in 10 subscribers slow. At 1,000 subscribers ringbuf sustains 128,000 messages per second and Go channels 14,700. At 10,000 subscribers 90,500 against 420. At 100,000 subscribers 12,300 against 35.](./docs/ringbuf-max-rate.svg)
+
 | Subscribers | Channels, drop when full | ringbuf | |
 |---:|---:|---:|---:|
 | 1,000 | 14,700 items/s | 128,000 items/s | 9x |
