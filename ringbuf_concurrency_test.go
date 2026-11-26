@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang-cz/ringbuf"
 )
@@ -176,6 +177,42 @@ func TestCloseWriteRace(t *testing.T) {
 		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("Write() = %v, subscriber read %v, want %v", err, got, want)
+		}
+	}
+}
+
+// TestCloseWakesParkedSubscribers checks that Close() releases every subscriber
+// blocked in Read(), whether it is already parked or still on its way to park.
+func TestCloseWakesParkedSubscribers(t *testing.T) {
+	const subs = 16
+
+	for i := range 500 {
+		stream := ringbuf.New[uint64](100)
+
+		errCh := make(chan error, subs)
+		for range subs {
+			sub := stream.Subscribe(context.Background(), nil)
+			go func() {
+				_, err := sub.Read(make([]uint64, 1))
+				errCh <- err
+			}()
+		}
+
+		// Odd iterations let the readers park first, even ones race Close() against the parking.
+		if i%2 == 1 {
+			time.Sleep(time.Millisecond)
+		}
+		stream.Close()
+
+		for range subs {
+			select {
+			case err := <-errCh:
+				if !errors.Is(err, io.EOF) {
+					t.Fatalf("iter %d: Read() after Close() = %v, want %v", i, err, io.EOF)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("iter %d: Close() left a subscriber parked in Read()", i)
+			}
 		}
 	}
 }

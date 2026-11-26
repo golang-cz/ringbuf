@@ -27,8 +27,7 @@ func New[T any](size uint64) *RingBuffer[T] {
 		closed: make(chan struct{}),
 		wake:   make(chan struct{}, 1),
 	}
-	notify := make(chan struct{})
-	rb.notify.Store(&notify)
+	rb.notify.Store(make(chan struct{}))
 	return rb
 }
 
@@ -64,7 +63,8 @@ type RingBuffer[T any] struct {
 	wake chan struct{}
 
 	// Closed and replaced to wake all parked subscribers.
-	notify atomic.Pointer[chan struct{}]
+	// Holds a chan struct{}; atomic.Value stores it without the extra allocation atomic.Pointer needs.
+	notify atomic.Value
 
 	// Keeps the subscriber-written leader flag off the writer's cache line.
 	_ [64]byte
@@ -172,20 +172,24 @@ func (rb *RingBuffer[T]) Write(items ...T) error {
 	rb.writeMu.Unlock()
 
 	// Hand the O(subscribers) wake-up to the leader subscriber; the writer never pays for it.
+	rb.wakeLeader()
+
+	return nil
+}
+
+// wakeLeader asks the leader subscriber, if any, to wake the rest.
+func (rb *RingBuffer[T]) wakeLeader() {
 	if rb.leader.Load() {
 		select {
 		case rb.wake <- struct{}{}:
 		default:
 		}
 	}
-
-	return nil
 }
 
 // wakeAll wakes every subscriber parked on the current notify channel.
 func (rb *RingBuffer[T]) wakeAll() {
-	next := make(chan struct{})
-	close(*rb.notify.Swap(&next))
+	close(rb.notify.Swap(make(chan struct{})).(chan struct{}))
 }
 
 // Close signals the end of the stream and wakes up all waiting subscribers.
@@ -202,8 +206,20 @@ func (rb *RingBuffer[T]) Close() {
 	rb.writeMu.Lock()
 	defer rb.writeMu.Unlock()
 
-	// Parked subscribers select on rb.closed, no extra wake-up needed.
 	close(rb.closed)
+
+	// Parked subscribers don't select on rb.closed, which saves them a shared channel lock per park.
+	rb.wakeLeader()
+}
+
+// isClosed reports whether Close() has been called.
+func (rb *RingBuffer[T]) isClosed() bool {
+	select {
+	case <-rb.closed:
+		return true
+	default:
+		return false
+	}
 }
 
 // intact reports whether slots copied from pos onwards are still the ones written at pos,
