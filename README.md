@@ -11,7 +11,7 @@
 
 **ringbuf vs. Go channels at 100,000 subscribers:**
 
-![27 times the throughput: 1,000 messages per second against 37. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 108 times lower memory use: 8.6 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
+![35 times the throughput: 1,000 messages per second against 29. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 108 times lower memory use: 8.6 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
 
 <sub>Throughput: 1 in 10 subscribers is on a slow connection. Writes and memory: every subscriber keeps up. [How it's measured](#benchmarks-vs-go-channels).</sub>
 
@@ -170,7 +170,7 @@ Fan-out with Go channels needs a channel per subscriber, each with its own buffe
 
 ![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 37 messages per second and seconds of delay. With nobody slow, channels need 17 ms per message and 926 MB, ringbuf 27 nanoseconds and 8.6 MB.](./docs/ringbuf-vs-channels.svg)
 
-<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. The charts show the M4 Pro run. Every number comes from a benchmark in this repository: see [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels) for the method, the commands and the limits.</sub>
+<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. The headline throughput is the M5 run; the other charts show the M4 Pro run. Every number comes from a benchmark in this repository: see [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels) for the method, the commands and the limits.</sub>
 
 ## More Features
 
