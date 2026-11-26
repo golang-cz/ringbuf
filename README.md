@@ -586,6 +586,18 @@ Size the buffer up front, for your write rate. It decides how long a subscriber 
 
 Example: 100,000 items per second into a 10,000-item buffer, with `MaxLag` at 90%, leaves 90 ms of slack. A single 100 ms pause then drops every subscriber at once. A 1,000,000-item buffer leaves 9 seconds.
 
+**A large buffer is cheap.** The buffer is shared, so its memory does not grow with the number of subscribers. With channels every subscriber needs its own buffer, so a bigger buffer is multiplied by the audience:
+
+| Buffer, 8-byte items | ringbuf, any number of subscribers | Channels, 100,000 subscribers |
+|---:|---:|---:|
+| 1,024 items | 8 KB | 0.8 GB |
+| 100,000 items | 0.8 MB | 80 GB |
+| 1,000,000 items | 8 MB | 800 GB |
+
+That is the buffer alone, items times item size. Each ringbuf subscriber adds a position and its goroutine, nothing more.
+
+A good starting point is a buffer that holds 10 seconds of your peak write rate: 100,000 items for 10,000 items per second. In the benchmarks above, going from 1,024 to 100,000 items cost 0.8 MB and raised what 100,000 subscribers could follow from about 1,000 to about 10,000 items per second.
+
 - When in doubt, pick the larger buffer. It is shared, so it costs one slot per item, however many subscribers there are.
 - Size for bursts, not for the average write rate.
 - Test with your real write rate and your slowest expected subscriber.
