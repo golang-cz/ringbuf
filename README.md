@@ -11,9 +11,9 @@
 
 **ringbuf vs. Go channels at 100,000 subscribers:**
 
-![35 times the throughput: 1,000 messages per second against 29. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 108 times lower memory use: 8.6 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
+![370 times the throughput: 10,000 messages per second against 27. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 98 times lower memory use: 9.4 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
 
-<sub>Throughput: 1 in 10 subscribers is on a slow connection. Writes and memory: every subscriber keeps up. [How it's measured](#benchmarks-vs-go-channels).</sub>
+<sub>Throughput: the writer wants 10,000 messages per second and 1 in 10 subscribers is on a slow connection. Writes and memory: every subscriber keeps up. ringbuf uses one shared buffer of 100,000 messages, channels 1,024 per subscriber. [How it's measured](#higher-message-rates).</sub>
 
 ## Key Features
 
@@ -58,6 +58,7 @@
 	- [Writer Cost](#writer-cost)
 	- [Subscriber Latency](#subscriber-latency)
 	- [Very Slow Connections](#very-slow-connections)
+	- [Higher Message Rates](#higher-message-rates)
 	- [Many Writers](#many-writers)
 	- [What You'd Have to Get Right Yourself](#what-youd-have-to-get-right-yourself)
 - [Performance](#performance)
@@ -170,7 +171,7 @@ Fan-out with Go channels needs a channel per subscriber, each with its own buffe
 
 ![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 37 messages per second and seconds of delay. With nobody slow, channels need 17 ms per message and 926 MB, ringbuf 27 nanoseconds and 8.6 MB.](./docs/ringbuf-vs-channels.svg)
 
-<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. The headline throughput is the M5 run; the other charts show the M4 Pro run. Every number comes from a benchmark in this repository: see [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels) for the method, the commands and the limits.</sub>
+<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. The charts show the M4 Pro run. Every number comes from a benchmark in this repository: see [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels) for the method, the commands and the limits.</sub>
 
 ## More Features
 
@@ -472,6 +473,40 @@ $ go test -bench='BenchmarkFanOutLatency/(ringbuf|channels_drop)' -run=^$ -count
 ```
 
 The charts in [ringbuf vs. Go Channels](#ringbuf-vs-go-channels) are drawn from these runs, and from `BenchmarkFanOutWrite` and `BenchmarkFanOutMemory` with the same subscriber counts.
+
+### Higher Message Rates
+
+The sections above ask for 1,000 items per second. Real feeds are faster: market data, game state, live scores, logs. What happens when the writer wants 10,000 to 50,000 items per second?
+
+Again 1 in 10 subscribers is a slow client that can take only 10 items per second. Channels keep 1,024 slots per subscriber. ringbuf gets one shared buffer of 100,000 items, which is 800 KB in total.
+
+Median of three runs on an Apple M4 Pro. "Sent" is what the writer got out per second. "Delivered" is the share of those items that fast subscribers received. "Age" is the 99th percentile for fast subscribers.
+
+| Subscribers | Asked | Channels: sent | Channels: delivered | Channels: age | ringbuf: sent | ringbuf: delivered | ringbuf: age |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 20,000 | 20,000 | 74% | 133 ms | 20,000 | 100% | 5 ms |
+| 1,000 | 50,000 | 50,000 | 29% | 280 ms | 50,000 | 100% | 46 ms |
+| 10,000 | 10,000 | ~1,400 | 100% | 4.4 s | 10,000 | 100% | 22 ms |
+| 10,000 | 50,000 | ~1,200 | 100% | 4.9 s | 50,000 | 100% | 54 ms |
+| 100,000 | 10,000 | ~27 | 100% | 5.0 s | 10,000 | 100% | 0.4 s |
+| 100,000 | 20,000 | ~27 | 100% | 5.0 s | 20,000 | 100% | 1.2 s |
+| 100,000 | 50,000 | ~27 | 100% | 5.0 s | 50,000 | ~50% | 2.0 s |
+
+Channels fail in two different ways here:
+
+- **Large audiences: the writer can't send fast enough.** Every item is one channel send per subscriber, so one item costs the writer about 0.7 ms at 10,000 subscribers and 14 ms at 100,000. That caps it near 1,400 and 27 items per second, whatever rate it is asked for. Nothing is dropped for fast subscribers. The items are just seconds late, and the delay keeps growing.
+- **Small audiences: fast subscribers lose items.** At 1,000 subscribers the writer does keep the pace. But every item is also one channel receive per subscriber, 20 million per second at 20,000 items per second. The fast subscribers fall more than 1,024 items behind, their channel is full, and the writer skips them. A fast client on a good connection now misses a quarter of the stream.
+- **Slow subscribers are skipped in both designs.** A client that takes 10 items per second can't follow a faster stream. With channels its buffer is always full and the writer drops almost every item for it. With ringbuf it gets `ErrTooSlow` and rejoins at the newest item.
+- **ringbuf subscribers read in batches.** One `Read()` copies up to 64 items here, so a subscriber that is behind catches up in one call instead of 64 channel receives.
+- **ringbuf has a limit too.** At 100,000 subscribers and 50,000 items per second, fast subscribers got only about half of the items. At 20,000 they got everything, but more than a second old. On this machine about 10,000 items per second is what 100,000 subscribers can follow comfortably.
+- **The buffer size matters.** With a buffer of only 1,024 items, ringbuf at 100,000 subscribers delivered everything at 1,000 items per second, 85% at 2,000 and 10% at 5,000. See [Sizing the Buffer](#sizing-the-buffer).
+
+```
+$ go test -bench='BenchmarkFanOutLatency/(ringbuf|channels_drop)' -run=^$ -benchtime=1x -count=3 -fanout_slow_every=10 -fanout_stall=100ms \
+    -fanout_subscribers=1000,10000,100000 -fanout_ringbuf_size=100000 -fanout_rate=10000 .
+```
+
+Change `-fanout_rate` for the other rows. The headline chart at the top of this page uses the 100,000 subscribers, 10,000 items per second row.
 
 ### Many Writers
 
