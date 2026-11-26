@@ -61,6 +61,7 @@
 	- [Many Writers](#many-writers)
 	- [What You'd Have to Get Right Yourself](#what-youd-have-to-get-right-yourself)
 - [Performance](#performance)
+	- [Sizing the Buffer](#sizing-the-buffer)
 	- [Performance Tips](#performance-tips)
 	- [In-memory Throughput Benchmark](#in-memory-throughput-benchmark)
 - [For AI Agents](#for-ai-agents)
@@ -151,6 +152,8 @@ func main() {
 	wg.Wait()
 }
 ```
+
+Before you ship, size the buffer for your write rate: see [Sizing the Buffer](#sizing-the-buffer).
 
 ## ringbuf vs. Go Channels
 
@@ -501,6 +504,20 @@ Storing an item once avoids the writer's send loop, so a hand-rolled shared buff
 ## Performance
 
 Performance heavily depends on hardware, ring buffer size and subscriber configuration (e.g. MaxLag). In real-world use cases, subscribers will likely be limited by I/O, network, message encoding/decoding, and also by other CPU and Go scheduler overhead of your program.
+
+### Sizing the Buffer
+
+Size the buffer up front, for your write rate. It decides how long a subscriber may stall before it is dropped.
+
+- A subscriber gets `ErrTooSlow` once it is more than `MaxLag` items behind the writer.
+- `MaxLag` defaults to half the buffer. It can be raised to 90% of it.
+- The slack in seconds is `MaxLag` divided by the items written per second.
+
+Example: 100,000 items per second into a 10,000-item buffer, with `MaxLag` at 90%, leaves 90 ms of slack. A single 100 ms pause then drops every subscriber at once. A 1,000,000-item buffer leaves 9 seconds.
+
+- When in doubt, pick the larger buffer. It is shared, so it costs one slot per item, however many subscribers there are.
+- Size for bursts, not for the average write rate.
+- Test with your real write rate and your slowest expected subscriber.
 
 ### Performance Tips
 
