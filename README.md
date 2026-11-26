@@ -17,12 +17,24 @@
 
 ## Key Features
 
-- **The writer never blocks.** It never waits for a subscriber, however many there are and however slow they get.
-- **Slow subscribers can't hurt anyone.** A subscriber that falls too far behind gets `ErrTooSlow` and can rejoin. The writer and the other subscribers don't notice.
-- **One buffer, shared by all subscribers.** Subscribers copy straight out of it. There are no per-subscriber queues, so a slow or bursty subscriber costs no extra memory.
-- **Fan-out cost stays almost flat.** A write takes about 20 ns with 100 subscribers and around 100 ns with 100,000. With channels it grows with every subscriber.
-- **Many writers, one stream.** Any number of writers publish concurrently. Every subscriber sees the same order.
-- **Late joiners and reconnects catch up.** Items stay in the buffer until they are overwritten. A new subscriber can start up to `StartBehind` items back. A reconnecting client can `Seek()` to its last processed item.
+- **The writer never blocks.**
+  - It never waits for a subscriber, however many there are and however slow they get.
+- **Slow subscribers can't hurt anyone.**
+  - A subscriber that falls too far behind gets `ErrTooSlow` and can rejoin.
+  - The writer and the other subscribers don't notice.
+- **One buffer, shared by all subscribers.**
+  - Subscribers copy straight out of it.
+  - There are no per-subscriber queues, so a slow or bursty subscriber costs no extra memory.
+- **Fan-out cost stays almost flat.**
+  - A write takes about 20 ns with 100 subscribers and around 100 ns with 100,000.
+  - With channels it grows with every subscriber.
+- **Many writers, one stream.**
+  - Any number of writers publish concurrently.
+  - Every subscriber sees the same order.
+- **Late joiners and reconnects catch up.**
+  - Items stay in the buffer until they are overwritten.
+  - A new subscriber can start up to `StartBehind` items back.
+  - A reconnecting client can `Seek()` to its last processed item.
 
 <!-- Table of contents. This comment ends the list above, so the two lists do not merge. -->
 
@@ -40,6 +52,7 @@
 - [Concurrency](#concurrency)
 - [Design Philosophy](#design-philosophy)
 - [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels)
+	- [Run Them Yourself](#run-them-yourself)
 	- [Slow Subscribers](#slow-subscribers)
 	- [Memory](#memory)
 	- [Writer Cost](#writer-cost)
@@ -104,11 +117,12 @@ func main() {
 
 	// Writer: publishes a live feed. It never waits for subscribers.
 	go func() {
+		defer stream.Close() // End of stream. Subscribers drain the buffer and get io.EOF.
+
 		for i := range 20 {
 			stream.Write(fmt.Sprintf("price-%d", i))
 			time.Sleep(50 * time.Millisecond)
 		}
-		stream.Close() // End of stream. Subscribers drain the buffer and get io.EOF.
 	}()
 
 	// Subscribers: one per client, each in its own goroutine. Clients connect at any time.
@@ -138,19 +152,17 @@ func main() {
 }
 ```
 
-`client-2` connects about 600 ms in. It first replays the last 5 buffered items, around `price-7` to `price-11`, then follows the live feed.
-
 ## ringbuf vs. Go Channels
 
 Fan-out with Go channels needs a channel per subscriber, each with its own buffer and lock. The writer sends each item once per subscriber, and blocks as soon as one of those buffers is full. ringbuf stores each item once, in one buffer shared by all subscribers.
 
 | | Go channels | ringbuf |
 |---|---|---|
-| **A subscriber gets slow** | Writer blocks until it catches up | Writer keeps its pace, subscriber gets `ErrTooSlow` |
-| **1,000 subscribers, 10 of them slow** | 1.2 ms per write | **23–28 ns** per write |
-| **100,000 subscribers** | 13–20 ms per write | **66–136 ns** per write |
-| **Data age at healthy subscribers, 10 of 1,000 slow** | Seconds, and rising | **0.3–0.5 ms** |
-| **Memory for 100,000 subscribers** | 926 MB | **8.6 MB** |
+| **Slow subscriber** | Writer blocks (backpressure), or drops items on a full buffer | Writer keeps its pace, subscriber gets `ErrTooSlow` |
+| **Write, 1,000 subscribers, 10 slow** | 1.2 ms | **23–28 ns** |
+| **Write, 100,000 subscribers** | 13–20 ms | **66–136 ns** |
+| **Data age, 10 of 1,000 slow** | Seconds, and rising | **0.3–0.5 ms** |
+| **Memory, 100,000 subscribers** | 926 MB | **8.6 MB** |
 | **Delivery** | Guaranteed, with backpressure | Best-effort |
 
 ![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 20 messages per second and seconds of delay. With nobody slow, channels need 20 ms per message and 926 MB, ringbuf 0.1 microseconds and 8.6 MB.](./docs/ringbuf-vs-channels.svg)
@@ -319,6 +331,16 @@ If you need guaranteed delivery, persistence, replay beyond the buffered window,
 Go channels are great for handing work to one goroutine. Fan-out to many subscribers is where they get expensive. Five benchmarks show where, and by how much. They use `uint64` items and a capacity of 1,024 on both sides. Channels send one item at a time, which is the usual way to write a fan-out.
 
 The tables show an Apple M4 Pro (12 cores). A second run on an Apple M5 (10 cores) confirmed the shape: memory matched exactly, ringbuf matched within noise, and channels were 15–45% faster there. Where the two machines disagree, the text says so. All of them live in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
+
+### Run Them Yourself
+
+The benchmarks are plain Go benchmarks. You need Go and a clone of this repository, nothing else:
+
+```
+$ git clone https://github.com/golang-cz/ringbuf && cd ringbuf
+```
+
+Every section below ends with the exact `go test` command that produced its table. Add `| tee result.txt` to keep the output. Close other programs first: the latency numbers are sensitive to anything else that uses the CPU. The channel rows at 100,000 subscribers need about 1 GB of memory.
 
 ### Slow Subscribers
 
