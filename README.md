@@ -11,9 +11,9 @@
 
 **ringbuf vs. Go channels at 100,000 subscribers:**
 
-![370 times the throughput: 10,000 messages per second against 27. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 98 times lower memory use: 9.4 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
+![350 times the throughput: 12,300 messages per second against 35. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 98 times lower memory use: 9.4 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
 
-<sub>Throughput: the writer wants 10,000 messages per second and 1 in 10 subscribers is on a slow connection. Writes and memory: every subscriber keeps up. ringbuf uses one shared buffer of 100,000 messages, channels 1,024 per subscriber. [How it's measured](#higher-message-rates).</sub>
+<sub>Throughput: the highest rate each design sustains with 1 in 10 subscribers on a slow connection. Writes and memory: every subscriber keeps up. ringbuf uses one shared buffer of 100,000 messages, channels 1,024 per subscriber. [How it's measured](#highest-sustained-rate).</sub>
 
 ## Key Features
 
@@ -59,6 +59,7 @@
 	- [Subscriber Latency](#subscriber-latency)
 	- [Very Slow Connections](#very-slow-connections)
 	- [Higher Message Rates](#higher-message-rates)
+	- [Highest Sustained Rate](#highest-sustained-rate)
 	- [Many Writers](#many-writers)
 	- [What You'd Have to Get Right Yourself](#what-youd-have-to-get-right-yourself)
 - [Performance](#performance)
@@ -506,7 +507,40 @@ $ go test -bench='BenchmarkFanOutLatency/(ringbuf|channels_drop)' -run=^$ -bench
     -fanout_subscribers=1000,10000,100000 -fanout_ringbuf_size=100000 -fanout_rate=10000 .
 ```
 
-Change `-fanout_rate` for the other rows. The headline chart at the top of this page uses the 100,000 subscribers, 10,000 items per second row.
+Change `-fanout_rate` for the other rows.
+
+### Highest Sustained Rate
+
+The sections above ask the writer for a fixed rate. `BenchmarkFanOutMaxRate` searches for the limit instead: the highest rate each design sustains on your machine.
+
+A rate counts as sustained when all three hold:
+
+- the writer stays within 10% of the rate it was asked for,
+- fast subscribers receive at least 99% of the items,
+- the 99th percentile age for fast subscribers stays under one second (`-fanout_max_age`).
+
+The search starts at 1,000 items per second, doubles until a rate fails, then narrows the gap to 10%.
+
+One search per cell on an Apple M4 Pro, with 1 in 10 subscribers slow and a 100,000-item ringbuf buffer, as in [Higher Message Rates](#higher-message-rates):
+
+| Subscribers | Channels, drop when full | ringbuf | |
+|---:|---:|---:|---:|
+| 1,000 | 14,700 items/s | 128,000 items/s | 9x |
+| 10,000 | 420 items/s | 90,500 items/s | 215x |
+| 100,000 | 35 items/s | 12,300 items/s | 350x |
+
+- **The gap grows with the audience.** Channels lose throughput about as fast as subscribers are added. ringbuf loses a third from 1,000 to 10,000 subscribers.
+- **The limits differ in kind.** Channels stop when the writer can't finish one pass over all channels in time. ringbuf stops when fast subscribers start to lose items (1,000 and 10,000 subscribers) or their data gets older than a second (100,000 subscribers).
+- **These are single searches.** Each trial runs for 5 seconds, so expect the result to move by 10–20% between runs.
+
+**Try it yourself.** This finds the limit of both designs on your machine. It takes about a minute per row and design:
+
+```
+$ go test -bench='BenchmarkFanOutMaxRate/(ringbuf|channels_drop)' -run=^$ -benchtime=1x -v -fanout_slow_every=10 -fanout_stall=100ms \
+    -fanout_subscribers=1000,10000,100000 -fanout_ringbuf_size=100000 .
+```
+
+With `-v` it prints every rate it tried. Change `-fanout_ringbuf_size`, `-fanout_slow_every` and `-fanout_max_age` to match your own workload. The headline chart at the top of this page uses the 100,000 subscribers row.
 
 ### Many Writers
 

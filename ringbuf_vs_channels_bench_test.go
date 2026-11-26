@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"runtime"
 	"slices"
 	"strconv"
@@ -32,6 +33,7 @@ var (
 	flagFanOutSlowEvery = flag.Int("fanout_slow_every", 100, "BenchmarkFanOutLatency: every Nth subscriber is slow (100 = 1%, 10 = 10%).")
 	flagFanOutStall     = flag.Duration("fanout_stall", 10*time.Millisecond, "BenchmarkFanOutLatency: time a slow subscriber needs per item.")
 	flagFanOutRate      = flag.Int("fanout_rate", 1_000, "BenchmarkFanOutLatency: items per second the writer is asked to publish.")
+	flagFanOutMaxAge    = flag.Duration("fanout_max_age", time.Second, "BenchmarkFanOutMaxRate: highest 99th percentile age at which a rate still counts as sustained.")
 	flagFanOutRingbuf   = flag.Uint64("fanout_ringbuf_size", vsChannelsCapacity, "BenchmarkFanOutLatency: size of the one shared ringbuf buffer. Channels keep 1,024 slots per subscriber.")
 )
 
@@ -315,19 +317,96 @@ func BenchmarkFanOutMemory(b *testing.B) {
 //
 //	go test -bench=BenchmarkFanOutLatency -run=^$ -benchtime=1x .
 func BenchmarkFanOutLatency(b *testing.B) {
-	interval := time.Second / time.Duration(*flagFanOutRate) // 1,000 items/s by default.
-	const (
-		warmUp  = 3 * time.Second // Long enough for blocked channel writers to settle.
-		measure = 2 * time.Second
-		sampled = 1_000 // Healthy subscribers that record latency, spread evenly.
-	)
-	stall, slowEvery := *flagFanOutStall, *flagFanOutSlowEvery
+	for _, v := range fanOutVariants() {
+		for _, subscribers := range flagFanOutSubscribers.Values {
+			b.Run(fmt.Sprintf("%s/subscribers_%d", v.name, subscribers), func(b *testing.B) {
+				r := runFanOut(v, subscribers, *flagFanOutRate) // 1,000 items/s by default.
 
-	type variant struct {
-		name string
-		// start launches the subscribers and returns the writer's publish func and a stop func.
-		start func(subscribers int, isSlow func(int) bool, record func(subscriber int, item uint64), stop <-chan struct{}) (write func(uint64), wait func())
+				b.ReportMetric(0, "ns/op")
+				b.ReportMetric(r.p50, "p50-ms")
+				b.ReportMetric(r.p99, "p99-ms")
+				b.ReportMetric(r.sent, "writes/s")
+				if r.sent > 0 {
+					b.ReportMetric(r.delivered, "delivered-%")
+				}
+			})
+		}
 	}
+}
+
+// BenchmarkFanOutMaxRate finds the highest write rate each design sustains, where BenchmarkFanOutLatency asks for a fixed one.
+//
+// A rate is sustained when the writer stays within 10% of it, healthy subscribers receive at least 99% of the
+// items, and their 99th percentile age stays under -fanout_max_age. The search starts at 1,000 items/s, doubles
+// until a rate fails, then narrows the gap to 10%. It reports the highest sustained rate as max-items/s.
+//
+// Every trial is one 5s BenchmarkFanOutLatency run, so a case takes about a minute. Run it once:
+//
+//	go test -bench=BenchmarkFanOutMaxRate -run=^$ -benchtime=1x -fanout_subscribers=100_000 -fanout_ringbuf_size=100000 .
+func BenchmarkFanOutMaxRate(b *testing.B) {
+	const floor, ceiling = 1, 10_000_000
+	maxAge := float64(*flagFanOutMaxAge) / 1e6
+
+	for _, v := range fanOutVariants() {
+		for _, subscribers := range flagFanOutSubscribers.Values {
+			b.Run(fmt.Sprintf("%s/subscribers_%d", v.name, subscribers), func(b *testing.B) {
+				// lo is the highest rate that passed, hi the lowest that failed; 0 means none yet.
+				lo, hi := 0, 0
+				var best fanOutResult
+				try := func(rate int) {
+					r := runFanOut(v, subscribers, rate)
+					ok := r.sent >= 0.9*float64(rate) && r.delivered >= 99 && r.p99 <= maxAge
+					b.Logf("asked %d items/s: sent %.0f, delivered %.1f%%, p99 %.1f ms, sustained=%v", rate, r.sent, r.delivered, r.p99, ok)
+					if ok {
+						lo, best = rate, r
+					} else {
+						hi = rate
+					}
+				}
+
+				try(1_000)
+				for hi == 0 && lo < ceiling {
+					try(lo * 2)
+				}
+				for lo == 0 && hi > floor {
+					try(max(hi/4, floor))
+				}
+				for lo > 0 && hi > 0 && float64(hi) > 1.1*float64(lo) {
+					mid := max(int(math.Sqrt(float64(lo)*float64(hi))), lo+1)
+					if mid >= hi {
+						break
+					}
+					try(mid)
+				}
+
+				b.ReportMetric(0, "ns/op")
+				b.ReportMetric(float64(lo), "max-items/s")
+				b.ReportMetric(best.p99, "p99-ms")
+				b.ReportMetric(best.delivered, "delivered-%")
+			})
+		}
+	}
+}
+
+const (
+	fanOutWarmUp  = 3 * time.Second // Long enough for blocked channel writers to settle.
+	fanOutMeasure = 2 * time.Second
+	fanOutSampled = 1_000 // Healthy subscribers that record latency, spread evenly.
+)
+
+type fanOutVariant struct {
+	name string
+	// start launches the subscribers and returns the writer's publish func and a stop func.
+	start func(subscribers int, isSlow func(int) bool, record func(subscriber int, item uint64), stop <-chan struct{}) (write func(uint64), wait func())
+}
+
+// fanOutResult is what one fan-out run measured: items/s the writer got out, and what healthy subscribers saw.
+type fanOutResult struct {
+	sent, delivered, p50, p99 float64
+}
+
+func fanOutVariants() []fanOutVariant {
+	stall := *flagFanOutStall
 
 	channels := func(drop bool) func(int, func(int) bool, func(int, uint64), <-chan struct{}) (func(uint64), func()) {
 		return func(subscribers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
@@ -376,7 +455,7 @@ func BenchmarkFanOutLatency(b *testing.B) {
 		}
 	}
 
-	variants := []variant{
+	return []fanOutVariant{
 		{"ringbuf", func(subscribers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
 			stream := ringbuf.New[uint64](*flagFanOutRingbuf)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -431,81 +510,80 @@ func BenchmarkFanOutLatency(b *testing.B) {
 		{"channels_drop", channels(true)},
 	}
 
-	for _, v := range variants {
-		for _, subscribers := range flagFanOutSubscribers.Values {
-			b.Run(fmt.Sprintf("%s/subscribers_%d", v.name, subscribers), func(b *testing.B) {
-				isSlow := func(i int) bool { return i%slowEvery == slowEvery-1 }
+}
 
-				// Latency samples of every step-th healthy subscriber; each subscriber appends to its own slice.
-				step := max(subscribers/sampled, 1)
-				samples := make([][]int64, subscribers)
-				var begin time.Time
-				record := func(subscriber int, item uint64) {
-					if subscriber%step != 0 || isSlow(subscriber) {
-						return
-					}
-					// Filter on the receive time: a writer that fell behind still delivers old items after the warm-up.
-					if now := time.Since(begin); now >= warmUp {
-						samples[subscriber] = append(samples[subscriber], int64(now)-int64(item))
-					}
-				}
+// runFanOut publishes at the given rate for a fixed 5s and measures the last 2s.
+func runFanOut(v fanOutVariant, subscribers, rate int) fanOutResult {
+	interval := time.Second / time.Duration(rate)
+	warmUp, measure, sampled := fanOutWarmUp, fanOutMeasure, fanOutSampled
+	slowEvery := *flagFanOutSlowEvery
+	isSlow := func(i int) bool { return i%slowEvery == slowEvery-1 }
 
-				stop := make(chan struct{})
-				write, wait := v.start(subscribers, isSlow, record, stop)
-				// Subscribers only read begin after the first write, which comes after this.
-				begin = time.Now()
-
-				// Items carry their scheduled write time. A late writer makes its items older, it doesn't hide the delay.
-				written := 0
-				for i := 0; ; i++ {
-					scheduled := time.Duration(i) * interval
-					if scheduled >= warmUp+measure || time.Since(begin) >= warmUp+measure {
-						break
-					}
-					if d := scheduled - time.Since(begin); d > 200*time.Microsecond {
-						time.Sleep(d - 200*time.Microsecond)
-					}
-					for time.Since(begin) < scheduled {
-						// Spin through the last stretch; time.Sleep alone overshoots.
-					}
-					write(uint64(scheduled))
-					if time.Since(begin) >= warmUp {
-						written++
-					}
-				}
-
-				// Let healthy subscribers pick up the last items before stopping everyone.
-				time.Sleep(50 * time.Millisecond)
-				close(stop)
-				wait()
-
-				var all []int64
-				recorders := 0
-				for subscriber, s := range samples {
-					all = append(all, s...)
-					if subscriber%step == 0 && !isSlow(subscriber) {
-						recorders++
-					}
-				}
-				slices.Sort(all)
-				percentile := func(p float64) float64 {
-					if len(all) == 0 {
-						return 0
-					}
-					return float64(all[int(float64(len(all)-1)*p)]) / 1e6
-				}
-
-				b.ReportMetric(0, "ns/op")
-				b.ReportMetric(percentile(0.50), "p50-ms")
-				b.ReportMetric(percentile(0.99), "p99-ms")
-				b.ReportMetric(float64(written)/measure.Seconds(), "writes/s")
-				if written > 0 {
-					// Can pass 100 when a late writer's backlog from the warm-up arrives in the measured window.
-					b.ReportMetric(100*float64(len(all))/float64(written*recorders), "delivered-%")
-				}
-			})
+	// Latency samples of every step-th healthy subscriber; each subscriber appends to its own slice.
+	step := max(subscribers/sampled, 1)
+	samples := make([][]int64, subscribers)
+	var begin time.Time
+	record := func(subscriber int, item uint64) {
+		if subscriber%step != 0 || isSlow(subscriber) {
+			return
+		}
+		// Filter on the receive time: a writer that fell behind still delivers old items after the warm-up.
+		if now := time.Since(begin); now >= warmUp {
+			samples[subscriber] = append(samples[subscriber], int64(now)-int64(item))
 		}
 	}
+
+	stop := make(chan struct{})
+	write, wait := v.start(subscribers, isSlow, record, stop)
+	// Subscribers only read begin after the first write, which comes after this.
+	begin = time.Now()
+
+	// Items carry their scheduled write time. A late writer makes its items older, it doesn't hide the delay.
+	written := 0
+	for i := 0; ; i++ {
+		scheduled := time.Duration(i) * interval
+		if scheduled >= warmUp+measure || time.Since(begin) >= warmUp+measure {
+			break
+		}
+		if d := scheduled - time.Since(begin); d > 200*time.Microsecond {
+			time.Sleep(d - 200*time.Microsecond)
+		}
+		for time.Since(begin) < scheduled {
+			// Spin through the last stretch; time.Sleep alone overshoots.
+		}
+		write(uint64(scheduled))
+		if time.Since(begin) >= warmUp {
+			written++
+		}
+	}
+
+	// Let healthy subscribers pick up the last items before stopping everyone.
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wait()
+
+	var all []int64
+	recorders := 0
+	for subscriber, s := range samples {
+		all = append(all, s...)
+		if subscriber%step == 0 && !isSlow(subscriber) {
+			recorders++
+		}
+	}
+	slices.Sort(all)
+	percentile := func(p float64) float64 {
+		if len(all) == 0 {
+			return 0
+		}
+		return float64(all[int(float64(len(all)-1)*p)]) / 1e6
+	}
+
+	r := fanOutResult{sent: float64(written) / measure.Seconds(), p50: percentile(0.50), p99: percentile(0.99)}
+	if written > 0 {
+		// Can pass 100 when a late writer's backlog from the warm-up arrives in the measured window.
+		r.delivered = 100 * float64(len(all)) / float64(written*recorders)
+	}
+	return r
 }
 
 // BenchmarkFanOutWriters compares fan-in plus fan-out: M writers publish concurrently to 1,000 live subscribers.
