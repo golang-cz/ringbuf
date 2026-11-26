@@ -31,6 +31,8 @@ var flagFanOutSubscribers = &SliceFlag[int]{
 var (
 	flagFanOutSlowEvery = flag.Int("fanout_slow_every", 100, "BenchmarkFanOutLatency: every Nth subscriber is slow (100 = 1%, 10 = 10%).")
 	flagFanOutStall     = flag.Duration("fanout_stall", 10*time.Millisecond, "BenchmarkFanOutLatency: time a slow subscriber needs per item.")
+	flagFanOutRate      = flag.Int("fanout_rate", 1_000, "BenchmarkFanOutLatency: items per second the writer is asked to publish.")
+	flagFanOutRingbuf   = flag.Uint64("fanout_ringbuf_size", vsChannelsCapacity, "BenchmarkFanOutLatency: size of the one shared ringbuf buffer. Channels keep 1,024 slots per subscriber.")
 )
 
 func init() {
@@ -313,11 +315,11 @@ func BenchmarkFanOutMemory(b *testing.B) {
 //
 //	go test -bench=BenchmarkFanOutLatency -run=^$ -benchtime=1x .
 func BenchmarkFanOutLatency(b *testing.B) {
+	interval := time.Second / time.Duration(*flagFanOutRate) // 1,000 items/s by default.
 	const (
-		interval = time.Millisecond // 1,000 items/s.
-		warmUp   = 3 * time.Second  // Long enough for blocked channel writers to settle.
-		measure  = 2 * time.Second
-		sampled  = 1_000 // Healthy subscribers that record latency, spread evenly.
+		warmUp  = 3 * time.Second // Long enough for blocked channel writers to settle.
+		measure = 2 * time.Second
+		sampled = 1_000 // Healthy subscribers that record latency, spread evenly.
 	)
 	stall, slowEvery := *flagFanOutStall, *flagFanOutSlowEvery
 
@@ -376,7 +378,7 @@ func BenchmarkFanOutLatency(b *testing.B) {
 
 	variants := []variant{
 		{"ringbuf", func(subscribers int, isSlow func(int) bool, record func(int, uint64), stop <-chan struct{}) (func(uint64), func()) {
-			stream := ringbuf.New[uint64](vsChannelsCapacity)
+			stream := ringbuf.New[uint64](*flagFanOutRingbuf)
 			ctx, cancel := context.WithCancel(context.Background())
 			go func() {
 				<-stop
@@ -411,7 +413,12 @@ func BenchmarkFanOutLatency(b *testing.B) {
 							record(i, item)
 						}
 						if slow {
-							time.Sleep(stall)
+							// Read() only looks at the context once it has caught up, and a slow subscriber may never do.
+							select {
+							case <-ctx.Done():
+								return
+							case <-time.After(stall):
+							}
 						}
 					}
 				}()
