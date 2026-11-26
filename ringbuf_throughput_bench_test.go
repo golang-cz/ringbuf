@@ -162,35 +162,20 @@ func BenchmarkThroughput(b *testing.B) {
 			elapsed := time.Since(t0)
 			b.StopTimer()
 
-			done := make(chan struct{})
-			go func() {
-				wgReaders.Wait()
-				close(done)
-			}()
-
-			deadline := time.NewTimer(1 * time.Second)
-			defer deadline.Stop()
-
-			select {
-			case <-done:
-				// All readers exited.
-
-			case <-deadline.C:
-				// Wake up all readers to exit.
-				cancel()
-				stream.Close()
-
-				// Wait for all readers to exit.
-				<-done
-			}
+			// End of stream: readers drain what is still buffered, then exit.
+			stream.Close()
+			wgReaders.Wait()
+			drained := time.Since(t0)
 
 			// Report metrics.
 			writes := float64(b.N * int(*flagWriteBatch))
 			reads := float64(deliveredReads.Load() - warmupReads)
 			secs := cmp.Or(elapsed.Seconds(), 1e-9) // Avoid division by zero.
+			// Reads are timed until the last reader is done, or a backlog read after the writer stopped would count as throughput.
+			readSecs := cmp.Or(drained.Seconds(), 1e-9)
 
 			b.ReportMetric(writes/secs, "writes/s")
-			b.ReportMetric(reads/secs, "reads/s")
+			b.ReportMetric(reads/readSecs, "reads/s")
 			b.ReportMetric(float64(fellBehind.Load()), "errors")
 
 			// Shown with `-test.v` (keeps benchmark output readable by default).
