@@ -91,7 +91,7 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 		}
 
 		// Load notify before the election and the re-check, or a concurrent wake-up could be missed.
-		notify := *s.rb.notify.Load()
+		notify := s.rb.notify.Load().(chan struct{})
 
 		// Only the leader listens on wake; a nil channel never fires for the others.
 		var wake chan struct{}
@@ -103,12 +103,12 @@ func (s *Subscriber[T]) Read(p []T) (int, error) {
 		}
 
 		// Wait for new data, then retry.
-		if s.pos == s.rb.writePos.Load() {
+		// Close() wakes through the leader, so it must be re-checked after the election too.
+		if s.pos == s.rb.writePos.Load() && !s.rb.isClosed() {
 			select {
 			case <-notify:
 			case <-wake:
 			case <-s.ctx.Done():
-			case <-s.rb.closed:
 			}
 		}
 

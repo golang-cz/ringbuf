@@ -121,6 +121,14 @@ func BenchmarkThroughput(b *testing.B) {
 				}
 			}
 
+			// Warm up: every reader parks once, so its one-time wait-queue allocations stay out of allocs/op.
+			stream.Write(slices.Repeat([]uint64{0}, int(*flagWriteBatch))...)
+			warmupReads := uint64(subs) * uint64(*flagWriteBatch)
+			for deliveredReads.Load() < warmupReads && fellBehind.Load() == 0 {
+				time.Sleep(time.Millisecond)
+			}
+			time.Sleep(50 * time.Millisecond)
+
 			// Produce items: Write batch of items b.N times
 			b.ResetTimer()
 			t0 := time.Now()
@@ -161,7 +169,7 @@ func BenchmarkThroughput(b *testing.B) {
 
 			// Report metrics.
 			writes := float64(b.N * int(*flagWriteBatch))
-			reads := float64(deliveredReads.Load())
+			reads := float64(deliveredReads.Load() - warmupReads)
 			secs := cmp.Or(elapsed.Seconds(), 1e-9) // Avoid division by zero.
 
 			b.ReportMetric(writes/secs, "writes/s")
