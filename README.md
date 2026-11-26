@@ -541,23 +541,23 @@ goos: darwin
 goarch: arm64
 pkg: github.com/golang-cz/ringbuf
 cpu: Apple M5
-BenchmarkThroughput/subscribers_1-10               100072 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_10-10             1000722 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_100-10           10007106 reads/s     100071 writes/s          0 errors
-BenchmarkThroughput/subscribers_1000-10         100075501 reads/s     100076 writes/s          0 errors
-BenchmarkThroughput/subscribers_10000-10       1000686559 reads/s     100069 writes/s          0 errors
-BenchmarkThroughput/subscribers_50000-10       5003855243 reads/s     100077 writes/s          0 errors
-BenchmarkThroughput/subscribers_100000-10     10004740196 reads/s     100047 writes/s          0 errors
-BenchmarkThroughput/subscribers_200000-10     20010092634 reads/s     100050 writes/s          0 errors
-BenchmarkThroughput/subscribers_500000-10       280261997 reads/s      560.5 writes/s          0 errors
-BenchmarkThroughput/subscribers_1000000-10      270855033 reads/s      270.9 writes/s          0 errors
+BenchmarkThroughput/subscribers_1-10            100057 reads/s     100065 writes/s          0 errors
+BenchmarkThroughput/subscribers_10-10          1000598 reads/s     100066 writes/s          0 errors
+BenchmarkThroughput/subscribers_100-10        10005083 reads/s     100065 writes/s          0 errors
+BenchmarkThroughput/subscribers_1000-10      100002235 reads/s     100075 writes/s          0 errors
+BenchmarkThroughput/subscribers_10000-10     997579084 reads/s     100083 writes/s          0 errors
+BenchmarkThroughput/subscribers_50000-10    4908906816 reads/s     100082 writes/s          0 errors
+BenchmarkThroughput/subscribers_100000-10   9612813165 reads/s     100073 writes/s          0 errors
+BenchmarkThroughput/subscribers_200000-10  18343801682 reads/s     100080 writes/s          0 errors
+BenchmarkThroughput/subscribers_500000-10  34010769054 reads/s     100082 writes/s          0 errors
+BenchmarkThroughput/subscribers_1000000-10 37472468588 reads/s     100081 writes/s          0 errors
 PASS
-ok  	github.com/golang-cz/ringbuf	74.387s
+ok  	github.com/golang-cz/ringbuf	31.117s
 ```
 
 </details>
 
-We can see that up to 200,000 subscribers were able to keep up with the writer and read a total of ~20 billion messages/sec with no subscriber falling behind (`errors=0`). However, from 500,000 subscribers on, we can see that the system was overloaded and the overall throughput degraded. The buffer size was very generous (200,000 items) and exceeded the number of writes, so we didn't see any errors.
+We can see that all 1,000,000 subscribers were able to keep up with the writer with no subscriber falling behind (`errors=0`), and the writer held its ~100,000 messages/sec at every size. Total read throughput peaked at ~37 billion messages/sec. Reads are timed until the last subscriber has drained the buffer, so from 500,000 subscribers on, reads/s grows slower than the subscriber count: the subscribers needed extra time to catch up after the writer finished. The buffer size was very generous (200,000 items) and exceeded the number of writes, so we didn't see any errors.
 
 However, when we decrease the buffer size from 200,000 to just 10,000 items:
 
@@ -570,23 +570,23 @@ goos: darwin
 goarch: arm64
 pkg: github.com/golang-cz/ringbuf
 cpu: Apple M5
-BenchmarkThroughput/subscribers_1-10      	       100072 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_10-10     	      1000719 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_100-10    	     10007222 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_1000-10   	    100071101 reads/s     100071 writes/s          0 errors
-BenchmarkThroughput/subscribers_10000-10  	   1000782188 reads/s     100078 writes/s          0 errors
-BenchmarkThroughput/subscribers_50000-10  	   1923639298 reads/s     100077 writes/s      32403 errors
-BenchmarkThroughput/subscribers_100000-10 	    419123458 reads/s     100065 writes/s      97163 errors
-BenchmarkThroughput/subscribers_200000-10 	    138727297 reads/s     100072 writes/s     199996 errors
-BenchmarkThroughput/subscribers_500000-10 	    324328784 reads/s      648.7 writes/s          0 errors
-BenchmarkThroughput/subscribers_1000000-10	    164544105 reads/s      164.5 writes/s          0 errors
+BenchmarkThroughput/subscribers_1-10            100057 reads/s     100065 writes/s          0 errors
+BenchmarkThroughput/subscribers_10-10          1000569 reads/s     100065 writes/s          0 errors
+BenchmarkThroughput/subscribers_100-10        10004705 reads/s     100066 writes/s          0 errors
+BenchmarkThroughput/subscribers_1000-10       99988650 reads/s     100060 writes/s          0 errors
+BenchmarkThroughput/subscribers_10000-10     997598568 reads/s     100082 writes/s          0 errors
+BenchmarkThroughput/subscribers_50000-10    4907895831 reads/s     100078 writes/s          0 errors
+BenchmarkThroughput/subscribers_100000-10   9224849009 reads/s     100080 writes/s       5293 errors
+BenchmarkThroughput/subscribers_200000-10   1917795035 reads/s     100081 writes/s     186987 errors
+BenchmarkThroughput/subscribers_500000-10    702934836 reads/s     100066 writes/s     499870 errors
+BenchmarkThroughput/subscribers_1000000-10   641307877 reads/s     100066 writes/s     999870 errors
 PASS
-ok  	github.com/golang-cz/ringbuf	56.813s
+ok  	github.com/golang-cz/ringbuf	28.178s
 ```
 
 </details>
 
-We can see that we were able to handle up to 10,000 subscribers with maximum throughput and no errors. However, at 50,000 subscribers, we start seeing errors (subscribers falling behind). We can see that our total read throughput peaked at ~1.9 billion messages/sec.
+We can see that we were able to handle up to 50,000 subscribers with maximum throughput and no errors. However, at 100,000 subscribers, we start seeing errors (subscribers falling behind), and from 200,000 on nearly every subscriber is dropped. We can see that our total read throughput peaked at ~9.2 billion messages/sec. The writer never slows down: it keeps its pace and drops the subscribers that can't follow.
 
 ## For AI Agents
 
