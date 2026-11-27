@@ -32,7 +32,7 @@ CI runs the tests and then all benchmarks on Linux with the Go version from `go.
 - One parked subscriber is the leader. It alone listens on `wake`, and it wakes the others through `notify`.
 - A leader always stores `leader = false` and then calls `wakeAll()` when it stops waiting. Keep that order.
 - A leader must not wait on `notify`. A stale `notify` channel caused a self-sustaining wake-up storm once.
-- A waiting subscriber loads `notify`, then runs the election, then re-checks `writePos`, then blocks. Reordering loses wake-ups.
+- A waiting subscriber loads `notify`, then runs the election, then re-checks `writePos` and `closed`, then blocks. Reordering loses wake-ups.
 - `writeHead` is published before slots are filled. Subscribers check `intact()` after copying and before handing data out.
 
 ## Benchmarking rules

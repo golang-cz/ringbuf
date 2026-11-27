@@ -11,18 +11,30 @@
 
 **ringbuf vs. Go channels at 100,000 subscribers:**
 
-![50 times the throughput: 1,000 messages per second against 20. 140,000 times faster writes: 0.1 microseconds per message against 20 ms. 108 times lower memory use: 8.6 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
+![1,350 times the throughput: 38,000 messages per second against 28. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 98 times lower memory use: 9.4 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
 
-<sub>Throughput: 1 in 10 subscribers is on a slow connection. Writes and memory: every subscriber keeps up. [How it's measured](#benchmarks-vs-go-channels).</sub>
+<sub>Throughput: the highest rate each design sustains with 1 in 10 subscribers on a slow connection. Writes and memory: every subscriber keeps up. ringbuf uses one shared buffer of 100,000 messages, channels 1,024 per subscriber. [How it's measured](#highest-sustained-rate).</sub>
 
 ## Key Features
 
-- **The writer never blocks.** It never waits for a subscriber, however many there are and however slow they get.
-- **Slow subscribers can't hurt anyone.** A subscriber that falls too far behind gets `ErrTooSlow` and can rejoin. The writer and the other subscribers don't notice.
-- **One buffer, shared by all subscribers.** Subscribers copy straight out of it. There are no per-subscriber queues, so a slow or bursty subscriber costs no extra memory.
-- **Fan-out cost stays almost flat.** A write takes about 20 ns with 100 subscribers and around 100 ns with 100,000. With channels it grows with every subscriber.
-- **Many writers, one stream.** Any number of writers publish concurrently. Every subscriber sees the same order.
-- **Late joiners and reconnects catch up.** Items stay in the buffer until they are overwritten. A new subscriber can start up to `StartBehind` items back. A reconnecting client can `Seek()` to its last processed item.
+- **The writer never blocks.**
+  - It never waits for a subscriber, however many there are and however slow they get.
+- **Slow subscribers can't hurt anyone.**
+  - A subscriber that falls too far behind gets `ErrTooSlow` and can rejoin.
+  - The writer and the other subscribers don't notice.
+- **One buffer, shared by all subscribers.**
+  - Subscribers copy straight out of it.
+  - There are no per-subscriber queues, so a slow or bursty subscriber costs no extra memory.
+- **Fan-out cost stays almost flat.**
+  - A write takes about 13 ns with 100 subscribers and under 30 ns with 100,000.
+  - With channels it grows with every subscriber.
+- **Many writers, one stream.**
+  - Any number of writers publish concurrently.
+  - Every subscriber sees the same order.
+- **Late joiners and reconnects catch up.**
+  - Items stay in the buffer until they are overwritten.
+  - A new subscriber can start up to `StartBehind` items back.
+  - A reconnecting client can `Seek()` to its last processed item.
 
 <!-- Table of contents. This comment ends the list above, so the two lists do not merge. -->
 
@@ -40,14 +52,18 @@
 - [Concurrency](#concurrency)
 - [Design Philosophy](#design-philosophy)
 - [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels)
+	- [Run Them Yourself](#run-them-yourself)
 	- [Slow Subscribers](#slow-subscribers)
 	- [Memory](#memory)
 	- [Writer Cost](#writer-cost)
 	- [Subscriber Latency](#subscriber-latency)
 	- [Very Slow Connections](#very-slow-connections)
+	- [Higher Message Rates](#higher-message-rates)
+	- [Highest Sustained Rate](#highest-sustained-rate)
 	- [Many Writers](#many-writers)
 	- [What You'd Have to Get Right Yourself](#what-youd-have-to-get-right-yourself)
 - [Performance](#performance)
+	- [Sizing the Buffer](#sizing-the-buffer)
 	- [Performance Tips](#performance-tips)
 	- [In-memory Throughput Benchmark](#in-memory-throughput-benchmark)
 - [For AI Agents](#for-ai-agents)
@@ -104,11 +120,12 @@ func main() {
 
 	// Writer: publishes a live feed. It never waits for subscribers.
 	go func() {
+		defer stream.Close() // End of stream. Subscribers drain the buffer and get io.EOF.
+
 		for i := range 20 {
 			stream.Write(fmt.Sprintf("price-%d", i))
 			time.Sleep(50 * time.Millisecond)
 		}
-		stream.Close() // End of stream. Subscribers drain the buffer and get io.EOF.
 	}()
 
 	// Subscribers: one per client, each in its own goroutine. Clients connect at any time.
@@ -138,7 +155,7 @@ func main() {
 }
 ```
 
-`client-2` connects about 600 ms in. It first replays the last 5 buffered items, around `price-7` to `price-11`, then follows the live feed.
+Before you ship, size the buffer for your write rate: see [Sizing the Buffer](#sizing-the-buffer).
 
 ## ringbuf vs. Go Channels
 
@@ -146,16 +163,16 @@ Fan-out with Go channels needs a channel per subscriber, each with its own buffe
 
 | | Go channels | ringbuf |
 |---|---|---|
-| **A subscriber gets slow** | Writer blocks until it catches up | Writer keeps its pace, subscriber gets `ErrTooSlow` |
-| **1,000 subscribers, 10 of them slow** | 1.2 ms per write | **23–28 ns** per write |
-| **100,000 subscribers** | 13–20 ms per write | **66–136 ns** per write |
-| **Data age at healthy subscribers, 10 of 1,000 slow** | Seconds, and rising | **0.3–0.5 ms** |
-| **Memory for 100,000 subscribers** | 926 MB | **8.6 MB** |
+| **Slow subscriber** | Writer blocks (backpressure), or drops items on a full buffer | Writer keeps its pace, subscriber gets `ErrTooSlow` |
+| **Write, 1,000 subscribers, 10 slow** | 1.2 ms | **14–21 ns** |
+| **Write, 100,000 subscribers** | 14–17 ms | **22–29 ns** |
+| **Data age, 10 of 1,000 slow** | Seconds, and rising | **0.4 ms** |
+| **Memory, 100,000 subscribers** | 926 MB | **8.6 MB** |
 | **Delivery** | Guaranteed, with backpressure | Best-effort |
 
-![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 20 messages per second and seconds of delay. With nobody slow, channels need 20 ms per message and 926 MB, ringbuf 0.1 microseconds and 8.6 MB.](./docs/ringbuf-vs-channels.svg)
+![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 37 messages per second and seconds of delay. With nobody slow, channels need 17 ms per message and 926 MB, ringbuf 27 nanoseconds and 8.6 MB.](./docs/ringbuf-vs-channels.svg)
 
-<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. The charts show the M4 Pro run. Every number comes from a benchmark in this repository: see [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels) for the method, the commands and the limits.</sub>
+<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. The throughput headline is the M5 run; the other charts show the M4 Pro run. Every number comes from a benchmark in this repository: see [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels) for the method, the commands and the limits.</sub>
 
 ## More Features
 
@@ -318,7 +335,17 @@ If you need guaranteed delivery, persistence, replay beyond the buffered window,
 
 Go channels are great for handing work to one goroutine. Fan-out to many subscribers is where they get expensive. Five benchmarks show where, and by how much. They use `uint64` items and a capacity of 1,024 on both sides. Channels send one item at a time, which is the usual way to write a fan-out.
 
-The tables show an Apple M4 Pro (12 cores). A second run on an Apple M5 (10 cores) confirmed the shape: memory matched exactly, ringbuf matched within noise, and channels were 15–45% faster there. Where the two machines disagree, the text says so. All of them live in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
+The tables show an Apple M4 Pro (12 cores). A second run on an Apple M5 (10 cores) confirmed the shape: memory matched exactly, ringbuf was up to 25% faster, and channels were 15–45% faster there. Where the two machines disagree, the text says so. All of them live in [ringbuf_vs_channels_bench_test.go](./ringbuf_vs_channels_bench_test.go).
+
+### Run Them Yourself
+
+The benchmarks are plain Go benchmarks. You need Go and a clone of this repository, nothing else:
+
+```
+$ git clone https://github.com/golang-cz/ringbuf && cd ringbuf
+```
+
+Every section below ends with the exact `go test` command that produced its table. Add `| tee result.txt` to keep the output. Close other programs first: the latency numbers are sensitive to anything else that uses the CPU. The channel rows at 100,000 subscribers need about 1 GB of memory.
 
 ### Slow Subscribers
 
@@ -327,8 +354,8 @@ This is the case ringbuf was built for. 1,000 subscribers are attached, and 10 o
 | | Writer, per item | Writes/s |
 |---|---:|---:|
 | Channels, blocking send | 1.2 ms | ~800 |
-| Channels, drop when full | 110–170 µs | ~5,900–9,000 |
-| ringbuf | 23–28 ns | ~36,000,000–43,000,000 |
+| Channels, drop when full | 107–165 µs | ~6,000–9,300 |
+| ringbuf | 14–21 ns | ~48,000,000–71,000,000 |
 
 - With blocking sends, 10 slow subscribers throttle the writer and the 990 healthy subscribers with it.
 - Dropping items for full channels unblocks the writer, but it still walks all 1,000 channels for every item.
@@ -357,7 +384,7 @@ $ go test -bench=BenchmarkFanOutMemory -run=^$ -benchtime=1x .
 
 The benchmarks stop at 10,000 subscribers by default. Add `-fanout_subscribers=100_000` to go further; channels then need close to 1 GB.
 
-At 1,000,000 subscribers ringbuf holds 86 MB and a write takes about 0.4 µs. A million goroutines overload the Go scheduler at that point, and end-to-end delivery slows down sharply. Channels would need over 9 GB for their buffers alone, so that run has no channel column.
+At 1,000,000 subscribers ringbuf holds 86 MB and a write takes about 0.2 µs. A million goroutines overload the Go scheduler at that point, and end-to-end delivery slows down sharply. Channels would need over 9 GB for their buffers alone, so that run has no channel column.
 
 ```
 $ go test -bench='BenchmarkFanOut(Write|Memory)/ringbuf' -run=^$ -fanout_subscribers=1_000_000 .
@@ -369,16 +396,16 @@ How long is the writer busy publishing one item to N live subscribers? This is w
 
 | Subscribers | Channels, blocking send | Channels, drop when full | ringbuf |
 |---:|---:|---:|---:|
-| 1 | 23 ns | 7–18 ns | 22–107 ns |
-| 100 | 19 µs | 16 µs | 22 ns |
-| 1,000 | 173 µs | 172 µs | 25 ns |
-| 10,000 | 1.3 ms | 1.3 ms | 27 ns |
-| 100,000 | 13–20 ms | 13–20 ms | 66–136 ns |
+| 1 | 22–26 ns | 7–18 ns | 9–40 ns |
+| 100 | 16 µs | 19 µs | 13 ns |
+| 1,000 | 149 µs | 152 µs | 19 ns |
+| 10,000 | 1.3 ms | 1.2 ms | 19 ns |
+| 100,000 | 14–17 ms | 14–17 ms | 22–29 ns |
 
 - Channels cost one send per subscriber, so the writer slows down linearly with the audience.
 - Dropping items for full subscribers doesn't help. The writer still visits every channel.
 - ringbuf does one write and wakes one subscriber. That subscriber wakes the rest.
-- With a single subscriber, a plain channel is faster, by up to 4x on one of our machines. ringbuf pays off from fan-out.
+- With a single subscriber the two are close: 9–40 ns for ringbuf, 7–26 ns for a channel. ringbuf pays off from fan-out.
 
 The writer runs at full speed in this benchmark. Slow ringbuf subscribers get dropped and rejoin, and the drop variant of channels discards items. The single-subscriber and 100,000-subscriber rows are ranges over both machines.
 
@@ -394,10 +421,10 @@ Median latency at healthy subscribers, as a range over both machines:
 
 | Subscribers | Channels, blocking send | Channels, drop when full | ringbuf |
 |---:|---:|---:|---:|
-| 100 | seconds, rising | 0.05–0.07 ms | 0.08–0.12 ms |
-| 1,000 | seconds, rising | 0.2–0.3 ms | 0.3–0.5 ms |
-| 10,000 | seconds, rising | 2.9 ms, or seconds | 2.8–5.5 ms |
-| 100,000 | seconds, rising | seconds, rising | 58–87 ms |
+| 100 | seconds, rising | 0.04–0.06 ms | 0.04–0.10 ms |
+| 1,000 | seconds, rising | 0.2–0.3 ms | 0.4 ms |
+| 10,000 | seconds, rising | 2.8 ms, or seconds | 2.5–5.7 ms |
+| 100,000 | seconds, rising | seconds, rising | 59–71 ms |
 
 Items the writer got out per second, of the 1,000 it was asked for:
 
@@ -405,8 +432,8 @@ Items the writer got out per second, of the 1,000 it was asked for:
 |---:|---:|---:|---:|
 | 100 | ~90 | 1,000 | 1,000 |
 | 1,000 | ~90 | 1,000 | 1,000 |
-| 10,000 | ~110 | 430–1,000 | 1,000 |
-| 100,000 | ~10 | ~26 | 1,000 |
+| 10,000 | ~110–135 | 270–1,000 | 1,000 |
+| 100,000 | ~12 | ~27 | 1,000 |
 
 - **Blocking channels fail at every size.** The slow subscribers hold the writer to about 100 items per second. It was asked for 1,000, so it falls further behind every second, and healthy subscribers get data that is seconds old.
 - **Channels with hand-written drop logic are the fastest option up to 1,000 subscribers**, a little ahead of ringbuf. They work for as long as one pass over all channels fits into the write interval. At 10,000 subscribers that pass took 0.7 ms on one machine and 1.3 ms on the other. With 1 ms between writes, the first machine tied with ringbuf and the second fell seconds behind. At 100,000 subscribers both collapse.
@@ -429,17 +456,17 @@ Median of three runs on an Apple M4 Pro. "Age" is how old an item is when a fast
 
 | Subscribers | Channels: items/s | Channels: age | ringbuf: items/s | ringbuf: age |
 |---:|---:|---:|---:|---:|
-| 1,000 | 1,000 | 3 ms | 1,000 | 2 ms |
-| 10,000 | ~220 | 3.9 s | 1,000 | 18 ms |
-| 20,000 | ~100 | 4.5 s | 1,000 | 320 ms |
-| 50,000 | ~60 | 4.7 s | 1,000 | 230 ms |
-| 100,000 | ~20 | 4.9 s | 1,000 | 400 ms |
+| 1,000 | 1,000 | 9 ms | 1,000 | 1 ms |
+| 10,000 | ~300 | 3.5 s | 1,000 | 16 ms |
+| 20,000 | ~160 | 4.2 s | 1,000 | 43 ms |
+| 50,000 | ~80 | 4.6 s | 1,000 | 130 ms |
+| 100,000 | ~37 | 4.9 s | 1,000 | 280 ms |
 
 - **Channels here skip an item when a subscriber's buffer is full.** That is the better channel design. With a plain blocking send the writer waits for the slowest client and gets out about 10 items per second at any size.
-- **Channels kept the pace at 1,000 subscribers.** At 10,000 they managed 210 to 910 items per second, depending on the run. One pass over all channels no longer fits into the write interval there.
+- **Channels kept the pace at 1,000 subscribers.** At 10,000 they managed 300 to 520 items per second, depending on the run. One pass over all channels no longer fits into the write interval there.
 - **Channel ages are cut off by the test.** It runs for 5 seconds, and the writer is still falling further behind when it ends.
 - **ringbuf kept the pace at every size**, within a few percent. Slow clients are dropped and reconnect. Fast subscribers received every item.
-- **ringbuf's price is data age.** It grows with the audience: the median is 0.4 ms at 1,000 subscribers, 7 ms at 10,000 and 190 ms at 100,000. The 99th percentile is noisy: at 20,000 subscribers it was 48, 320 and 670 ms in the three runs.
+- **ringbuf's price is data age.** It grows with the audience: the median is 0.3 ms at 1,000 subscribers, 7 ms at 10,000 and 130 ms at 100,000. The 99th percentile is two to three times the median: at 100,000 subscribers it was 260 to 300 ms in the three runs.
 
 ```
 $ go test -bench='BenchmarkFanOutLatency/(ringbuf|channels_drop)' -run=^$ -count=3 -fanout_slow_every=10 -fanout_stall=100ms \
@@ -448,18 +475,87 @@ $ go test -bench='BenchmarkFanOutLatency/(ringbuf|channels_drop)' -run=^$ -count
 
 The charts in [ringbuf vs. Go Channels](#ringbuf-vs-go-channels) are drawn from these runs, and from `BenchmarkFanOutWrite` and `BenchmarkFanOutMemory` with the same subscriber counts.
 
+### Higher Message Rates
+
+The sections above ask for 1,000 items per second. Real feeds are faster: market data, game state, live scores, logs. What happens when the writer wants 10,000 to 50,000 items per second?
+
+Again 1 in 10 subscribers is a slow client that can take only 10 items per second. Channels keep 1,024 slots per subscriber. ringbuf gets one shared buffer of 100,000 items, which is 800 KB in total.
+
+Median of three runs on an Apple M4 Pro. "Sent" is what the writer got out per second. "Delivered" is the share of those items that fast subscribers received. "Age" is the 99th percentile for fast subscribers.
+
+| Subscribers | Asked | Channels: sent | Channels: delivered | Channels: age | ringbuf: sent | ringbuf: delivered | ringbuf: age |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 20,000 | 20,000 | 74% | 133 ms | 20,000 | 100% | 5 ms |
+| 1,000 | 50,000 | 50,000 | 29% | 280 ms | 50,000 | 100% | 46 ms |
+| 10,000 | 10,000 | ~1,400 | 100% | 4.4 s | 10,000 | 100% | 22 ms |
+| 10,000 | 50,000 | ~1,200 | 100% | 4.9 s | 50,000 | 100% | 54 ms |
+| 100,000 | 10,000 | ~27 | 100% | 5.0 s | 10,000 | 100% | 0.4 s |
+| 100,000 | 20,000 | ~27 | 100% | 5.0 s | 20,000 | 100% | 1.2 s |
+| 100,000 | 50,000 | ~27 | 100% | 5.0 s | 50,000 | ~50% | 2.0 s |
+
+Channels fail in two different ways here:
+
+- **Large audiences: the writer can't send fast enough.** Every item is one channel send per subscriber, so one item costs the writer about 0.7 ms at 10,000 subscribers and 14 ms at 100,000. That caps it near 1,400 and 27 items per second, whatever rate it is asked for. Nothing is dropped for fast subscribers. The items are just seconds late, and the delay keeps growing.
+- **Small audiences: fast subscribers lose items.** At 1,000 subscribers the writer does keep the pace. But every item is also one channel receive per subscriber, 20 million per second at 20,000 items per second. The fast subscribers fall more than 1,024 items behind, their channel is full, and the writer skips them. A fast client on a good connection now misses a quarter of the stream.
+- **Slow subscribers are skipped in both designs.** A client that takes 10 items per second can't follow a faster stream. With channels its buffer is always full and the writer drops almost every item for it. With ringbuf it gets `ErrTooSlow` and rejoins at the newest item.
+- **ringbuf subscribers read in batches.** One `Read()` copies up to 64 items here, so a subscriber that is behind catches up in one call instead of 64 channel receives.
+- **ringbuf has a limit too.** At 100,000 subscribers and 50,000 items per second, fast subscribers got only about half of the items. At 20,000 they got everything, but more than a second old. On this machine about 10,000 items per second is what 100,000 subscribers can follow comfortably.
+- **The buffer size matters.** With a buffer of only 1,024 items, ringbuf at 100,000 subscribers delivered everything at 1,000 items per second, 85% at 2,000 and 10% at 5,000. See [Sizing the Buffer](#sizing-the-buffer).
+
+```
+$ go test -bench='BenchmarkFanOutLatency/(ringbuf|channels_drop)' -run=^$ -benchtime=1x -count=3 -fanout_slow_every=10 -fanout_stall=100ms \
+    -fanout_subscribers=1000,10000,100000 -fanout_ringbuf_size=100000 -fanout_rate=10000 .
+```
+
+Change `-fanout_rate` for the other rows.
+
+### Highest Sustained Rate
+
+The sections above ask the writer for a fixed rate. `BenchmarkFanOutMaxRate` searches for the limit instead: the highest rate each design sustains on your machine.
+
+A rate counts as sustained when all three hold:
+
+- the writer stays within 10% of the rate it was asked for,
+- fast subscribers receive at least 99% of the items,
+- the 99th percentile age for fast subscribers stays under one second (`-fanout_max_age`).
+
+The search starts at 1,000 items per second, doubles until a rate fails, then narrows the gap to 10%.
+
+Median of three searches on an Apple M5 (10 cores), with 1 in 10 subscribers slow and a 100,000-item ringbuf buffer, as in [Higher Message Rates](#higher-message-rates):
+
+![Highest sustained rate with 1 in 10 subscribers slow. At 1,000 subscribers ringbuf sustains 256,000 messages per second and Go channels 13,500. At 10,000 subscribers 256,000 against 2,180. At 100,000 subscribers 38,100 against 28.](./docs/ringbuf-max-rate.svg)
+
+| Subscribers | Channels, drop when full | ringbuf | |
+|---:|---:|---:|---:|
+| 1,000 | 13,500 items/s | 256,000 items/s | 19x |
+| 10,000 | 2,180 items/s | 256,000 items/s | 117x |
+| 100,000 | 28 items/s | 38,100 items/s | 1,350x |
+
+- **The gap grows with the audience.** Channels lose throughput faster than subscribers are added. ringbuf holds the same rate from 1,000 to 10,000 subscribers.
+- **What stops each design.** At 100,000 subscribers the channel writer can't finish one pass over all channels in time; below that, fast subscribers start to lose items. ringbuf stops when fast subscribers start to lose items (1,000 and 10,000 subscribers) or their data gets older than a second (100,000 subscribers).
+- **Results move between runs and machines.** The three searches differed by up to 30%. A single search on an Apple M4 Pro (12 cores) that was running other work gave 9x, 215x and 350x: 128,000, 90,500 and 12,300 items per second for ringbuf against 14,700, 420 and 35 for channels.
+
+**Try it yourself.** This finds the limit of both designs on your machine. It takes about half an hour; drop `-count=3` for a single search of about ten minutes:
+
+```
+$ go test -bench='BenchmarkFanOutMaxRate/(ringbuf|channels_drop)' -run=^$ -benchtime=1x -count=3 -v -fanout_slow_every=10 -fanout_stall=100ms \
+    -fanout_subscribers=1000,10000,100000 -fanout_ringbuf_size=100000 .
+```
+
+With `-v` it prints every rate it tried. Change `-fanout_ringbuf_size`, `-fanout_slow_every` and `-fanout_max_age` to match your own workload. The headline chart at the top of this page uses the 100,000 subscribers row.
+
 ### Many Writers
 
 What happens when several writers publish to the same 1,000 subscribers at once? Time per item across all writers, on the M4 Pro:
 
 | Writers | Go channels | ringbuf |
 |---:|---:|---:|
-| 1 | 177 µs | 28 ns |
-| 2 | 107 µs | 63 ns |
-| 4 | 86 µs | 69 ns |
-| 8 | 49 µs | 70 ns |
+| 1 | 140 µs | 20 ns |
+| 2 | 90 µs | 58 ns |
+| 4 | 57 µs | 73 ns |
+| 8 | 44 µs | 77 ns |
 
-- ringbuf stays about 700x ahead at 8 writers.
+- ringbuf stays almost 600x ahead at 8 writers.
 - More writers don't make ringbuf faster. They take turns in one short critical section, so total throughput stays about the same.
 - Channels do gain from more writers, because the sends run in parallel. They start from far behind.
 - With channels, two subscribers can see two writers' items in a different order. With ringbuf every subscriber sees the same order.
@@ -479,6 +575,32 @@ Storing an item once avoids the writer's send loop, so a hand-rolled shared buff
 ## Performance
 
 Performance heavily depends on hardware, ring buffer size and subscriber configuration (e.g. MaxLag). In real-world use cases, subscribers will likely be limited by I/O, network, message encoding/decoding, and also by other CPU and Go scheduler overhead of your program.
+
+### Sizing the Buffer
+
+Size the buffer up front, for your write rate. It decides how long a subscriber may stall before it is dropped.
+
+- A subscriber gets `ErrTooSlow` once it is more than `MaxLag` items behind the writer.
+- `MaxLag` defaults to half the buffer. It can be raised to 90% of it.
+- The slack in seconds is `MaxLag` divided by the items written per second.
+
+Example: 100,000 items per second into a 10,000-item buffer, with `MaxLag` at 90%, leaves 90 ms of slack. A single 100 ms pause then drops every subscriber at once. A 1,000,000-item buffer leaves 9 seconds.
+
+**A large buffer is cheap.** The buffer is shared, so its memory does not grow with the number of subscribers. With channels every subscriber needs its own buffer, so a bigger buffer is multiplied by the audience:
+
+| Buffer, 8-byte items | ringbuf, any number of subscribers | Channels, 100,000 subscribers |
+|---:|---:|---:|
+| 1,024 items | 8 KB | 0.8 GB |
+| 100,000 items | 0.8 MB | 80 GB |
+| 1,000,000 items | 8 MB | 800 GB |
+
+That is the buffer alone, items times item size. Each ringbuf subscriber adds a position and its goroutine, nothing more.
+
+A good starting point is a buffer that holds 10 seconds of your peak write rate: 100,000 items for 10,000 items per second. In the benchmarks above, going from 1,024 to 100,000 items cost 0.8 MB and raised what 100,000 subscribers could follow from about 1,000 to about 10,000 items per second.
+
+- When in doubt, pick the larger buffer. It is shared, so it costs one slot per item, however many subscribers there are.
+- Size for bursts, not for the average write rate.
+- Test with your real write rate and your slowest expected subscriber.
 
 ### Performance Tips
 
@@ -502,23 +624,23 @@ goos: darwin
 goarch: arm64
 pkg: github.com/golang-cz/ringbuf
 cpu: Apple M5
-BenchmarkThroughput/subscribers_1-10               100072 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_10-10             1000722 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_100-10           10007106 reads/s     100071 writes/s          0 errors
-BenchmarkThroughput/subscribers_1000-10         100075501 reads/s     100076 writes/s          0 errors
-BenchmarkThroughput/subscribers_10000-10       1000686559 reads/s     100069 writes/s          0 errors
-BenchmarkThroughput/subscribers_50000-10       5003855243 reads/s     100077 writes/s          0 errors
-BenchmarkThroughput/subscribers_100000-10     10004740196 reads/s     100047 writes/s          0 errors
-BenchmarkThroughput/subscribers_200000-10     20010092634 reads/s     100050 writes/s          0 errors
-BenchmarkThroughput/subscribers_500000-10       280261997 reads/s      560.5 writes/s          0 errors
-BenchmarkThroughput/subscribers_1000000-10      270855033 reads/s      270.9 writes/s          0 errors
+BenchmarkThroughput/subscribers_1-10            100057 reads/s     100065 writes/s          0 errors
+BenchmarkThroughput/subscribers_10-10          1000598 reads/s     100066 writes/s          0 errors
+BenchmarkThroughput/subscribers_100-10        10005083 reads/s     100065 writes/s          0 errors
+BenchmarkThroughput/subscribers_1000-10      100002235 reads/s     100075 writes/s          0 errors
+BenchmarkThroughput/subscribers_10000-10     997579084 reads/s     100083 writes/s          0 errors
+BenchmarkThroughput/subscribers_50000-10    4908906816 reads/s     100082 writes/s          0 errors
+BenchmarkThroughput/subscribers_100000-10   9612813165 reads/s     100073 writes/s          0 errors
+BenchmarkThroughput/subscribers_200000-10  18343801682 reads/s     100080 writes/s          0 errors
+BenchmarkThroughput/subscribers_500000-10  34010769054 reads/s     100082 writes/s          0 errors
+BenchmarkThroughput/subscribers_1000000-10 37472468588 reads/s     100081 writes/s          0 errors
 PASS
-ok  	github.com/golang-cz/ringbuf	74.387s
+ok  	github.com/golang-cz/ringbuf	31.117s
 ```
 
 </details>
 
-We can see that up to 200,000 subscribers were able to keep up with the writer and read a total of ~20 billion messages/sec with no subscriber falling behind (`errors=0`). However, from 500,000 subscribers on, we can see that the system was overloaded and the overall throughput degraded. The buffer size was very generous (200,000 items) and exceeded the number of writes, so we didn't see any errors.
+We can see that all 1,000,000 subscribers were able to keep up with the writer with no subscriber falling behind (`errors=0`), and the writer held its ~100,000 messages/sec at every size. Total read throughput peaked at ~37 billion messages/sec. Reads are timed until the last subscriber has drained the buffer, so from 500,000 subscribers on, reads/s grows slower than the subscriber count: the subscribers needed extra time to catch up after the writer finished. The buffer size was very generous (200,000 items) and exceeded the number of writes, so we didn't see any errors.
 
 However, when we decrease the buffer size from 200,000 to just 10,000 items:
 
@@ -531,23 +653,23 @@ goos: darwin
 goarch: arm64
 pkg: github.com/golang-cz/ringbuf
 cpu: Apple M5
-BenchmarkThroughput/subscribers_1-10      	       100072 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_10-10     	      1000719 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_100-10    	     10007222 reads/s     100072 writes/s          0 errors
-BenchmarkThroughput/subscribers_1000-10   	    100071101 reads/s     100071 writes/s          0 errors
-BenchmarkThroughput/subscribers_10000-10  	   1000782188 reads/s     100078 writes/s          0 errors
-BenchmarkThroughput/subscribers_50000-10  	   1923639298 reads/s     100077 writes/s      32403 errors
-BenchmarkThroughput/subscribers_100000-10 	    419123458 reads/s     100065 writes/s      97163 errors
-BenchmarkThroughput/subscribers_200000-10 	    138727297 reads/s     100072 writes/s     199996 errors
-BenchmarkThroughput/subscribers_500000-10 	    324328784 reads/s      648.7 writes/s          0 errors
-BenchmarkThroughput/subscribers_1000000-10	    164544105 reads/s      164.5 writes/s          0 errors
+BenchmarkThroughput/subscribers_1-10            100057 reads/s     100065 writes/s          0 errors
+BenchmarkThroughput/subscribers_10-10          1000569 reads/s     100065 writes/s          0 errors
+BenchmarkThroughput/subscribers_100-10        10004705 reads/s     100066 writes/s          0 errors
+BenchmarkThroughput/subscribers_1000-10       99988650 reads/s     100060 writes/s          0 errors
+BenchmarkThroughput/subscribers_10000-10     997598568 reads/s     100082 writes/s          0 errors
+BenchmarkThroughput/subscribers_50000-10    4907895831 reads/s     100078 writes/s          0 errors
+BenchmarkThroughput/subscribers_100000-10   9224849009 reads/s     100080 writes/s       5293 errors
+BenchmarkThroughput/subscribers_200000-10   1917795035 reads/s     100081 writes/s     186987 errors
+BenchmarkThroughput/subscribers_500000-10    702934836 reads/s     100066 writes/s     499870 errors
+BenchmarkThroughput/subscribers_1000000-10   641307877 reads/s     100066 writes/s     999870 errors
 PASS
-ok  	github.com/golang-cz/ringbuf	56.813s
+ok  	github.com/golang-cz/ringbuf	28.178s
 ```
 
 </details>
 
-We can see that we were able to handle up to 10,000 subscribers with maximum throughput and no errors. However, at 50,000 subscribers, we start seeing errors (subscribers falling behind). We can see that our total read throughput peaked at ~1.9 billion messages/sec.
+We can see that we were able to handle up to 50,000 subscribers with maximum throughput and no errors. However, at 100,000 subscribers, we start seeing errors (subscribers falling behind), and from 200,000 on nearly every subscriber is dropped. We can see that our total read throughput peaked at ~9.2 billion messages/sec. The writer never slows down: it keeps its pace and drops the subscribers that can't follow.
 
 ## For AI Agents
 
