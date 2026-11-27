@@ -11,7 +11,7 @@
 
 **ringbuf vs. Go channels at 100,000 subscribers:**
 
-![350 times the throughput: 12,300 messages per second against 35. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 98 times lower memory use: 9.4 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
+![1,350 times the throughput: 38,000 messages per second against 28. 600,000 times faster writes: 27 nanoseconds per message against 17 ms. 98 times lower memory use: 9.4 MB against 926 MB.](./docs/ringbuf-vs-channels-summary.svg)
 
 <sub>Throughput: the highest rate each design sustains with 1 in 10 subscribers on a slow connection. Writes and memory: every subscriber keeps up. ringbuf uses one shared buffer of 100,000 messages, channels 1,024 per subscriber. [How it's measured](#highest-sustained-rate).</sub>
 
@@ -172,7 +172,7 @@ Fan-out with Go channels needs a channel per subscriber, each with its own buffe
 
 ![Four charts up to 100,000 subscribers. With 1 in 10 subscribers slow, ringbuf keeps 1,000 messages per second and fast subscribers wait under half a second, while Go channels fall to 37 messages per second and seconds of delay. With nobody slow, channels need 17 ms per message and 926 MB, ringbuf 27 nanoseconds and 8.6 MB.](./docs/ringbuf-vs-channels.svg)
 
-<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. The charts show the M4 Pro run. Every number comes from a benchmark in this repository: see [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels) for the method, the commands and the limits.</sub>
+<sub>Ranges cover two machines, Apple M4 Pro and Apple M5. The throughput headline is the M5 run; the other charts show the M4 Pro run. Every number comes from a benchmark in this repository: see [Benchmarks vs. Go Channels](#benchmarks-vs-go-channels) for the method, the commands and the limits.</sub>
 
 ## More Features
 
@@ -521,24 +521,24 @@ A rate counts as sustained when all three hold:
 
 The search starts at 1,000 items per second, doubles until a rate fails, then narrows the gap to 10%.
 
-One search per cell on an Apple M4 Pro, with 1 in 10 subscribers slow and a 100,000-item ringbuf buffer, as in [Higher Message Rates](#higher-message-rates):
+Median of three searches on an Apple M5 (10 cores), with 1 in 10 subscribers slow and a 100,000-item ringbuf buffer, as in [Higher Message Rates](#higher-message-rates):
 
-![Highest sustained rate with 1 in 10 subscribers slow. At 1,000 subscribers ringbuf sustains 128,000 messages per second and Go channels 14,700. At 10,000 subscribers 90,500 against 420. At 100,000 subscribers 12,300 against 35.](./docs/ringbuf-max-rate.svg)
+![Highest sustained rate with 1 in 10 subscribers slow. At 1,000 subscribers ringbuf sustains 256,000 messages per second and Go channels 13,500. At 10,000 subscribers 256,000 against 2,180. At 100,000 subscribers 38,100 against 28.](./docs/ringbuf-max-rate.svg)
 
 | Subscribers | Channels, drop when full | ringbuf | |
 |---:|---:|---:|---:|
-| 1,000 | 14,700 items/s | 128,000 items/s | 9x |
-| 10,000 | 420 items/s | 90,500 items/s | 215x |
-| 100,000 | 35 items/s | 12,300 items/s | 350x |
+| 1,000 | 13,500 items/s | 256,000 items/s | 19x |
+| 10,000 | 2,180 items/s | 256,000 items/s | 117x |
+| 100,000 | 28 items/s | 38,100 items/s | 1,350x |
 
-- **The gap grows with the audience.** Channels lose throughput about as fast as subscribers are added. ringbuf loses a third from 1,000 to 10,000 subscribers.
-- **The limits differ in kind.** Channels stop when the writer can't finish one pass over all channels in time. ringbuf stops when fast subscribers start to lose items (1,000 and 10,000 subscribers) or their data gets older than a second (100,000 subscribers).
-- **These are single searches.** Each trial runs for 5 seconds, so expect the result to move by 10–20% between runs.
+- **The gap grows with the audience.** Channels lose throughput faster than subscribers are added. ringbuf holds the same rate from 1,000 to 10,000 subscribers.
+- **What stops each design.** At 100,000 subscribers the channel writer can't finish one pass over all channels in time; below that, fast subscribers start to lose items. ringbuf stops when fast subscribers start to lose items (1,000 and 10,000 subscribers) or their data gets older than a second (100,000 subscribers).
+- **Results move between runs and machines.** The three searches differed by up to 30%. A single search on an Apple M4 Pro (12 cores) that was running other work gave 9x, 215x and 350x: 128,000, 90,500 and 12,300 items per second for ringbuf against 14,700, 420 and 35 for channels.
 
-**Try it yourself.** This finds the limit of both designs on your machine. It takes about a minute per row and design:
+**Try it yourself.** This finds the limit of both designs on your machine. It takes about half an hour; drop `-count=3` for a single search of about ten minutes:
 
 ```
-$ go test -bench='BenchmarkFanOutMaxRate/(ringbuf|channels_drop)' -run=^$ -benchtime=1x -v -fanout_slow_every=10 -fanout_stall=100ms \
+$ go test -bench='BenchmarkFanOutMaxRate/(ringbuf|channels_drop)' -run=^$ -benchtime=1x -count=3 -v -fanout_slow_every=10 -fanout_stall=100ms \
     -fanout_subscribers=1000,10000,100000 -fanout_ringbuf_size=100000 .
 ```
 
